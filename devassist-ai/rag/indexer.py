@@ -42,7 +42,7 @@ class CodebaseIndexer:
 
     def _load_files(self) -> list[dict]:
         docs = []
-        valid_exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".md"}
+        valid_exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".md", ".java"}
         skip_dirs = {"node_modules", ".git", "__pycache__", "venv", ".venv", "dist", "build"}
 
         for root, dirs, files in os.walk(self.codebase_path):
