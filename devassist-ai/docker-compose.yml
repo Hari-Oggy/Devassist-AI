@@ -35,7 +35,7 @@ services:
 
   worker:
     build: .
-    command: celery -A queue.celery_app worker --loglevel=info --concurrency=2
+    command: celery -A taskqueue.celery_app worker --loglevel=info --concurrency=2
     env_file:
       - .env
     environment:

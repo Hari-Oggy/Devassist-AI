@@ -2,7 +2,7 @@
 Documentation worker — Celery task that runs the DocumentationAgent asynchronously.
 """
 
-from queue.celery_app import celery_app
+from taskqueue.celery_app import celery_app
 from core.config import get_settings
 from core.logger import get_logger
 

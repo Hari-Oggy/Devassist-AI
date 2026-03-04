@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     # --- LLM Provider Configuration ---
     LLM_PROVIDER: str = Field(default="openai", description="Primary LLM provider: openai, anthropic, gemini, local")
-    LLM_MODEL: str = Field(default="gpt-4o", description="Default model name for the selected provider")
+    LLM_MODEL: str = Field(default="gemini-2.0-flash", description="Default model name for the selected provider")
     LLM_TEMPERATURE: float = Field(default=0.0, description="Default temperature for LLM calls")
     LLM_MAX_TOKENS: int = Field(default=4096, description="Default max tokens for LLM responses")
 
@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # --- Local LLM Configuration ---
     LOCAL_API_BASE: str = Field(default="http://localhost:11434/v1", description="Base URL for local LLM (Ollama/vLLM/LM Studio)")
     LOCAL_API_KEY: str = Field(default="not-needed", description="API key for local LLM (often not required)")
-    LOCAL_MODEL: str = Field(default="llama3", description="Model name for local LLM")
+    LOCAL_MODEL: str = Field(default="llama3.2", description="Model name for local LLM")
 
     # --- GitHub Configuration ---
     GITHUB_TOKEN: Optional[str] = Field(default=None, description="GitHub Personal Access Token")

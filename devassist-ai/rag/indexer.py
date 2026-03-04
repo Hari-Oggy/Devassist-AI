@@ -1,6 +1,6 @@
 import os
 import pathlib
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from core.config import get_settings
 from core.logger import get_logger

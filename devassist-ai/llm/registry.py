@@ -19,13 +19,6 @@ MODEL_REGISTRY: dict[str, dict] = {
         "supports_json": True,
         "supports_vision": True,
     },
-    "gpt-3.5-turbo": {
-        "provider": "openai",
-        "context_window": 16385,
-        "supports_tools": True,
-        "supports_json": True,
-        "supports_vision": False,
-    },
 
     # --- Anthropic ---
     "claude-3-5-sonnet-20241022": {
@@ -44,14 +37,28 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
 
     # --- Gemini ---
-    "gemini-1.5-pro": {
+    "gemini-2.5-pro": {
         "provider": "gemini",
         "context_window": 1048576,
         "supports_tools": True,
         "supports_json": True,
         "supports_vision": True,
     },
-    "gemini-1.5-flash": {
+    "gemini-2.5-flash": {
+        "provider": "gemini",
+        "context_window": 1048576,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": True,
+    },
+    "gemini-2.0-flash": {
+        "provider": "gemini",
+        "context_window": 1048576,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": True,
+    },
+    "gemini-3-flash-preview": {
         "provider": "gemini",
         "context_window": 1048576,
         "supports_tools": True,
@@ -89,19 +96,21 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "code_review": [
         "gpt-4o",
         "claude-3-5-sonnet-20241022",
-        "gemini-1.5-pro",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash",
         "llama3",
     ],
     "documentation": [
         "claude-3-5-sonnet-20241022",
         "gpt-4o",
-        "gemini-1.5-pro",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash",
         "llama3",
     ],
     "general": [
         "gpt-4o-mini",
-        "gpt-3.5-turbo",
-        "gemini-1.5-flash",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
         "llama3",
     ],
 }

@@ -68,6 +68,21 @@ class LLMRouter:
     def __init__(self):
         self.settings = get_settings()
 
+    def _provider_is_available(self, provider_name: str) -> bool:
+        """Check if a provider has the required API key configured."""
+        s = self.settings
+        placeholder_values = {"your_openai_api_key_here", "your_anthropic_api_key_here", "your_gemini_api_key_here"}
+
+        if provider_name == "openai":
+            return bool(s.OPENAI_API_KEY) and s.OPENAI_API_KEY not in placeholder_values
+        elif provider_name == "anthropic":
+            return bool(s.ANTHROPIC_API_KEY) and s.ANTHROPIC_API_KEY not in placeholder_values
+        elif provider_name == "gemini":
+            return bool(s.GEMINI_API_KEY) and s.GEMINI_API_KEY not in placeholder_values
+        elif provider_name == "local":
+            return True  # Local LLMs don't need an API key
+        return False
+
     def generate(self, request: LLMRequest) -> LLMResponse:
         """
         Main entry point. Routes the request through:
@@ -86,7 +101,9 @@ class LLMRouter:
         # 2. Determine model chain
         chain = self._build_chain(request)
         if not chain:
-            return LLMResponse(error="No compatible models found for this task.", provider="router")
+            return LLMResponse(error="No compatible models found for this task. Check your API keys in .env", provider="router")
+
+        logger.info(f"Model chain: {chain}", extra={"request_id": request_id})
 
         # 3. Try each model in the chain with retries
         fallback_used = False
@@ -138,17 +155,25 @@ class LLMRouter:
     def _build_chain(self, request: LLMRequest) -> list[str]:
         """
         Build the ordered list of models to try.
-        If user explicitly configured a provider+model, put that first, then fallbacks.
+        1. Put the user's configured model first.
+        2. Filter out any models whose provider has no API key.
+        3. Filter out models that don't support required features (e.g., tools).
         """
         chain = get_fallback_chain(request.task_type)
 
-        # If user has a specific provider preference, front-load the configured model
+        # Front-load the configured model
         configured_model = self.settings.LLM_MODEL
         if configured_model and configured_model not in chain:
             chain = [configured_model] + chain
         elif configured_model and configured_model in chain:
             chain.remove(configured_model)
             chain = [configured_model] + chain
+
+        # Remove models whose providers have no API key configured
+        chain = [
+            m for m in chain
+            if m in MODEL_REGISTRY and self._provider_is_available(MODEL_REGISTRY[m]["provider"])
+        ]
 
         # Filter models that require tools but model doesn't support them
         if request.tools:

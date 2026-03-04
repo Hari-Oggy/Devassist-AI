@@ -85,7 +85,7 @@ doc_history: list = []
 def _celery_available() -> bool:
     """Check if Celery/Redis is reachable."""
     try:
-        from queue.celery_app import celery_app
+        from taskqueue.celery_app import celery_app
         celery_app.connection().ensure_connection(max_retries=1, timeout=2)
         return True
     except Exception:
@@ -185,7 +185,7 @@ async def create_document(request: DocumentRequest):
 async def get_task_status(task_id: str):
     """Poll for the result of an async task."""
     try:
-        from queue.celery_app import celery_app
+        from taskqueue.celery_app import celery_app
         result = celery_app.AsyncResult(task_id)
         response = {
             "task_id": task_id,

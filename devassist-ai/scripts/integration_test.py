@@ -88,8 +88,11 @@ def main():
         repo = gh.get_repo(settings.GITHUB_REPO)
         print(f"  Found repo: {repo.full_name}")
         prs = list(repo.get_pulls(state='open', sort='created', direction='desc')[:3])
-        for pr in prs:
-            print(f"    PR #{pr.number}: {pr.title}")
+        if prs:
+            for pr in prs:
+                print(f"    PR #{pr.number}: {pr.title}")
+        else:
+            print("    No open PRs found (that's OK)")
         github_ok = True
     except Exception as e:
         print(f"  Error: {e}")
