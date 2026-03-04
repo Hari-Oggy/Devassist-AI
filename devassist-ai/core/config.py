@@ -1,0 +1,69 @@
+import os
+from pathlib import Path
+from pydantic_settings import BaseSettings
+from pydantic import Field
+from typing import Optional
+
+
+class Settings(BaseSettings):
+    """Central configuration loaded from .env file. All components import from here."""
+
+    # --- LLM Provider Configuration ---
+    LLM_PROVIDER: str = Field(default="openai", description="Primary LLM provider: openai, anthropic, gemini, local")
+    LLM_MODEL: str = Field(default="gpt-4o", description="Default model name for the selected provider")
+    LLM_TEMPERATURE: float = Field(default=0.0, description="Default temperature for LLM calls")
+    LLM_MAX_TOKENS: int = Field(default=4096, description="Default max tokens for LLM responses")
+
+    # Task-specific temperature overrides
+    REVIEW_TEMPERATURE: float = Field(default=0.0, description="Temperature for code review tasks")
+    DOC_TEMPERATURE: float = Field(default=0.2, description="Temperature for documentation tasks")
+
+    # --- API Keys ---
+    OPENAI_API_KEY: Optional[str] = Field(default=None, description="OpenAI API Key")
+    ANTHROPIC_API_KEY: Optional[str] = Field(default=None, description="Anthropic API Key")
+    GEMINI_API_KEY: Optional[str] = Field(default=None, description="Google Gemini API Key")
+
+    # --- Local LLM Configuration ---
+    LOCAL_API_BASE: str = Field(default="http://localhost:11434/v1", description="Base URL for local LLM (Ollama/vLLM/LM Studio)")
+    LOCAL_API_KEY: str = Field(default="not-needed", description="API key for local LLM (often not required)")
+    LOCAL_MODEL: str = Field(default="llama3", description="Model name for local LLM")
+
+    # --- GitHub Configuration ---
+    GITHUB_TOKEN: Optional[str] = Field(default=None, description="GitHub Personal Access Token")
+    GITHUB_REPO: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format")
+
+    # --- RAG Configuration ---
+    CODEBASE_PATH: str = Field(default="./local_repo", description="Path to the codebase to index")
+    FAISS_INDEX_PATH: str = Field(default="./data/faiss_index", description="Path to FAISS index storage")
+
+    # --- Infrastructure ---
+    REDIS_URL: str = Field(default="redis://localhost:6379/0", description="Redis broker URL for Celery")
+    API_HOST: str = Field(default="0.0.0.0", description="API server host")
+    API_PORT: int = Field(default=8000, description="API server port")
+
+    # --- Retry / Resilience ---
+    LLM_MAX_RETRIES: int = Field(default=3, description="Max retries for LLM API calls")
+    REVIEW_TIMEOUT: int = Field(default=120, description="Timeout in seconds for review tasks")
+    DOC_TIMEOUT: int = Field(default=120, description="Timeout in seconds for documentation tasks")
+
+    # --- Cache ---
+    CACHE_ENABLED: bool = Field(default=False, description="Enable Redis-based LLM response caching")
+    CACHE_TTL: int = Field(default=3600, description="Cache TTL in seconds")
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
+
+
+# Singleton instance
+_settings: Optional[Settings] = None
+
+
+def get_settings() -> Settings:
+    """Returns a singleton Settings instance."""
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+    return _settings
