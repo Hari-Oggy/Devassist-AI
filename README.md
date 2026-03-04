@@ -51,6 +51,12 @@ The router automatically falls back to other providers if the primary fails.
 
 ## URLs
 
+
+
+
+
 - **Frontend:** http://localhost:8501
 - **API Docs:** http://localhost:8000/docs
 - **Health Check:** http://localhost:8000/health
+
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/42361dd9-333a-4164-9878-27da05599428" />
