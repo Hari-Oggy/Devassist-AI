@@ -50,6 +50,18 @@ class Settings(BaseSettings):
     CACHE_ENABLED: bool = Field(default=False, description="Enable Redis-based LLM response caching")
     CACHE_TTL: int = Field(default=3600, description="Cache TTL in seconds")
 
+    # --- Webhook / Polling ---
+    WEBHOOK_SECRET: str = Field(default="", description="GitHub webhook HMAC secret for signature verification")
+    BOT_NAME: str = Field(default="devassist-ai", description="Bot identity name used in comment markers")
+    POLLING_ENABLED: bool = Field(default=False, description="Enable GitHub polling mode (alternative to webhooks)")
+    POLLING_INTERVAL: int = Field(default=30, description="Seconds between GitHub polls")
+
+    # --- Review Protection ---
+    MAX_DIFF_SIZE: int = Field(default=15000, description="Max diff characters to send to LLM (truncate beyond)")
+    REVIEW_DEBOUNCE_SECONDS: int = Field(default=60, description="Min seconds between reviews of the same PR")
+    SKIP_DRAFT_PRS: bool = Field(default=True, description="Skip draft PRs in webhook/poller")
+    REQUIRE_LABEL: str = Field(default="", description="If set, only review PRs with this label")
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

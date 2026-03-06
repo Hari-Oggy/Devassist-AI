@@ -1,9 +1,7 @@
 [project]
 name = "devassist-ai"
 version = "2.0.0"
-authors = [
-    { name = "Hareesh T", email = "hareesh9320@gmail.com" }
-]
+authors = [{ name = "Hareesh T", email = "hareesh9320@gmail.com" }]
 description = "Autonomous code review and documentation agent powered by multi-LLM routing"
 readme = "README.md"
 requires-python = ">=3.11"

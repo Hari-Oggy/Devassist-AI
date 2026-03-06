@@ -35,6 +35,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount webhook router
+from api.webhook import router as webhook_router
+app.include_router(webhook_router)
+
 
 # ─── Models ───────────────────────────────────────────────────────────────────
 
@@ -98,6 +102,15 @@ def _celery_available() -> bool:
 async def startup_event():
     logger.info(f"DevAssist AI API v2.0 running on http://{settings.API_HOST}:{settings.API_PORT}")
     logger.info(f"LLM Provider: {settings.LLM_PROVIDER} | Model: {settings.LLM_MODEL}")
+
+    # Start GitHub Poller if enabled
+    if settings.POLLING_ENABLED:
+        from api.poller import get_poller
+        poller = get_poller()
+        poller.start()
+        logger.info(f"GitHub Poller started (interval: {settings.POLLING_INTERVAL}s)")
+    else:
+        logger.info("Polling disabled — use webhooks or manual trigger")
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────

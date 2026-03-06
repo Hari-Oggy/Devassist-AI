@@ -67,6 +67,13 @@ MODEL_REGISTRY: dict[str, dict] = {
     },
 
     # --- Local LLM (defaults, user can override model name) ---
+    "qwen2.5-7b-instruct": {
+        "provider": "local",
+        "context_window": 32768,
+        "supports_tools": False,
+        "supports_json": True,
+        "supports_vision": False,
+    },
     "llama3": {
         "provider": "local",
         "context_window": 8192,
@@ -94,6 +101,7 @@ MODEL_REGISTRY: dict[str, dict] = {
 # --- Fallback Chains (task_type -> ordered list of models to try) ---
 FALLBACK_CHAINS: dict[str, list[str]] = {
     "code_review": [
+        "qwen2.5-7b-instruct",
         "gpt-4o",
         "claude-3-5-sonnet-20241022",
         "gemini-2.5-pro",
@@ -101,6 +109,7 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
         "llama3",
     ],
     "documentation": [
+        "qwen2.5-7b-instruct",
         "claude-3-5-sonnet-20241022",
         "gpt-4o",
         "gemini-2.5-pro",
@@ -108,6 +117,7 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
         "llama3",
     ],
     "general": [
+        "qwen2.5-7b-instruct",
         "gpt-4o-mini",
         "gemini-2.5-flash",
         "gemini-2.0-flash",
