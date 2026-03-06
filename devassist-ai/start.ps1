@@ -1,5 +1,5 @@
 # ============================================
-# DevAssist AI — Windows Startup Script
+# DevAssist AI - Windows Startup Script
 # Usage: .\start.ps1
 # ============================================
 
@@ -8,102 +8,170 @@ $PROJECT_DIR = $PSScriptRoot
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "    DevAssist AI v2.0 — Starting Up     " -ForegroundColor Cyan
+Write-Host "    DevAssist AI v2.0 - Starting Up     " -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
 # -------------------------------------------
+# 0. Check .env file exists
+# -------------------------------------------
+Write-Host "[0/7] Checking .env file..." -ForegroundColor Yellow
+if (-not (Test-Path "$PROJECT_DIR\.env")) {
+    Write-Host "  ERROR: .env file not found. Copy .env.example to .env and fill in your values." -ForegroundColor Red
+    exit 1
+}
+Write-Host "  OK: .env file found" -ForegroundColor Green
+
+# -------------------------------------------
 # 1. Check Python venv
 # -------------------------------------------
-Write-Host "[1/6] Checking virtual environment..." -ForegroundColor Yellow
-if (Test-Path "$PROJECT_DIR\.venv\Scripts\activate.ps1") {
+Write-Host "[1/7] Checking virtual environment..." -ForegroundColor Yellow
+if (Test-Path "$PROJECT_DIR\.venv\Scripts\Activate.ps1") {
     & "$PROJECT_DIR\.venv\Scripts\Activate.ps1"
-    Write-Host "  ✅ Virtual environment activated" -ForegroundColor Green
+    Write-Host "  OK: Virtual environment activated" -ForegroundColor Green
 } else {
-    Write-Host "  ❌ .venv not found. Run 'uv init' and 'uv pip install -r requirements.txt' first." -ForegroundColor Red
+    Write-Host "  ERROR: .venv not found. Run 'python -m venv .venv' and 'pip install -r requirements.txt' first." -ForegroundColor Red
     exit 1
 }
 
 # -------------------------------------------
 # 2. Install dependencies (if needed)
 # -------------------------------------------
-Write-Host "[2/6] Checking dependencies..." -ForegroundColor Yellow
-$missing = $false
-python -c "import fastapi; import streamlit; import celery; import google.genai" 2>$null
+Write-Host "[2/7] Checking dependencies..." -ForegroundColor Yellow
+python -c "import fastapi; import streamlit; import celery; import google.generativeai" 2>$null
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  📦 Installing dependencies..." -ForegroundColor Yellow
-    pip install -r "$PROJECT_DIR\requirements.txt" --quiet
-    $missing = $true
-}
-if (-not $missing) {
-    Write-Host "  ✅ All dependencies OK" -ForegroundColor Green
+    Write-Host "  Installing missing dependencies..." -ForegroundColor Yellow
+    & "$PROJECT_DIR\.venv\Scripts\pip.exe" install -r "$PROJECT_DIR\requirements.txt" --quiet
+    Write-Host "  OK: Dependencies installed" -ForegroundColor Green
+} else {
+    Write-Host "  OK: All dependencies found" -ForegroundColor Green
 }
 
 # -------------------------------------------
 # 3. Check / Start Redis via Docker
 # -------------------------------------------
-Write-Host "[3/6] Checking Redis..." -ForegroundColor Yellow
+Write-Host "[3/7] Checking Redis..." -ForegroundColor Yellow
 $redisRunning = docker ps --filter "name=devassist-redis" --format "{{.Names}}" 2>$null
 if ($redisRunning -eq "devassist-redis") {
-    Write-Host "  ✅ Redis already running" -ForegroundColor Green
+    Write-Host "  OK: Redis already running" -ForegroundColor Green
 } else {
-    # Check if container exists but is stopped
     $redisStopped = docker ps -a --filter "name=devassist-redis" --format "{{.Names}}" 2>$null
     if ($redisStopped -eq "devassist-redis") {
-        Write-Host "  🔄 Starting existing Redis container..." -ForegroundColor Yellow
+        Write-Host "  Starting existing Redis container..." -ForegroundColor Yellow
         docker start devassist-redis | Out-Null
     } else {
-        Write-Host "  🚀 Starting new Redis container..." -ForegroundColor Yellow
+        Write-Host "  Starting new Redis container..." -ForegroundColor Yellow
         docker run -d --name devassist-redis -p 6379:6379 redis:alpine | Out-Null
     }
     Start-Sleep -Seconds 2
-    Write-Host "  ✅ Redis started on port 6379" -ForegroundColor Green
+    Write-Host "  OK: Redis started on port 6379" -ForegroundColor Green
 }
 
 # -------------------------------------------
 # 4. Build FAISS index (if missing)
 # -------------------------------------------
-Write-Host "[4/6] Checking FAISS index..." -ForegroundColor Yellow
+Write-Host "[4/7] Checking FAISS index..." -ForegroundColor Yellow
 $indexPath = "$PROJECT_DIR\data\faiss_index\index.faiss"
 if (Test-Path $indexPath) {
-    Write-Host "  ✅ FAISS index exists" -ForegroundColor Green
+    Write-Host "  OK: FAISS index exists" -ForegroundColor Green
 } else {
     $codePath = python -c "from core.config import get_settings; print(get_settings().CODEBASE_PATH)" 2>$null
     if ($codePath -and (Test-Path $codePath)) {
-        Write-Host "  📦 Building FAISS index from $codePath ..." -ForegroundColor Yellow
+        Write-Host "  Building FAISS index from $codePath ..." -ForegroundColor Yellow
         python "$PROJECT_DIR\scripts\setup_index.py"
-        Write-Host "  ✅ FAISS index built" -ForegroundColor Green
+        Write-Host "  OK: FAISS index built" -ForegroundColor Green
     } else {
-        Write-Host "  ⚠️  Skipped — set CODEBASE_PATH in .env to a valid repo folder" -ForegroundColor DarkYellow
+        Write-Host "  SKIPPED: Set CODEBASE_PATH in .env to a valid repo folder" -ForegroundColor DarkYellow
     }
+}
+
+# Ensure PID directory exists
+$pidDir = "$PROJECT_DIR\.pids"
+if (-not (Test-Path $pidDir)) {
+    New-Item -ItemType Directory -Path $pidDir | Out-Null
+}
+
+# Helper: stop process listening on a given port
+function Stop-PortProcess {
+    param([int]$Port)
+    $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($conn) {
+        Write-Host "  Port $Port in use, stopping old process (PID: $($conn.OwningProcess))..." -ForegroundColor Yellow
+        Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+    }
+}
+
+# Helper: wait for an HTTP endpoint to respond
+function Wait-ForEndpoint {
+    param([string]$Url, [int]$MaxRetries = 15)
+    $retries = 0
+    while ($retries -lt $MaxRetries) {
+        try {
+            Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2 | Out-Null
+            return $true
+        } catch {
+            Start-Sleep -Seconds 1
+            $retries++
+        }
+    }
+    return $false
 }
 
 # -------------------------------------------
 # 5. Start API Server (background)
 # -------------------------------------------
-Write-Host "[5/6] Starting API server..." -ForegroundColor Yellow
+Write-Host "[5/7] Starting API server..." -ForegroundColor Yellow
+Stop-PortProcess -Port 8000
 
-# Kill any existing API process on port 8000
-$existingApi = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($existingApi) {
-    Write-Host "  🔄 Port 8000 in use, stopping old process..." -ForegroundColor Yellow
-    Stop-Process -Id $existingApi.OwningProcess -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 1
+$apiJob = Start-Process -FilePath "python" `
+    -ArgumentList "-m uvicorn api.main:app --host 127.0.0.1 --port 8000" `
+    -WorkingDirectory $PROJECT_DIR `
+    -PassThru -WindowStyle Minimized
+
+$apiJob.Id | Out-File "$pidDir\api.pid" -Force
+
+Write-Host "  Waiting for API server..." -ForegroundColor DarkGray
+if (Wait-ForEndpoint -Url "http://127.0.0.1:8000/health") {
+    Write-Host "  OK: API server running at http://127.0.0.1:8000 (PID: $($apiJob.Id))" -ForegroundColor Green
+    Write-Host "      Docs: http://127.0.0.1:8000/docs" -ForegroundColor DarkGray
+} else {
+    Write-Host "  WARNING: API server may not be ready yet - check logs" -ForegroundColor DarkYellow
 }
 
-$apiJob = Start-Process -FilePath "python" -ArgumentList "-m uvicorn api.main:app --host 127.0.0.1 --port 8000" -WorkingDirectory $PROJECT_DIR -PassThru -WindowStyle Minimized
-Start-Sleep -Seconds 3
-Write-Host "  ✅ API server running at http://127.0.0.1:8000 (PID: $($apiJob.Id))" -ForegroundColor Green
-Write-Host "     📖 API Docs: http://127.0.0.1:8000/docs" -ForegroundColor DarkGray
+# -------------------------------------------
+# 6. Start Celery Worker (background)
+# -------------------------------------------
+Write-Host "[6/7] Starting Celery worker..." -ForegroundColor Yellow
+
+$celeryJob = Start-Process -FilePath "python" `
+    -ArgumentList "-m celery -A core.celery_app worker --loglevel=info" `
+    -WorkingDirectory $PROJECT_DIR `
+    -PassThru -WindowStyle Minimized
+
+$celeryJob.Id | Out-File "$pidDir\celery.pid" -Force
+Start-Sleep -Seconds 2
+Write-Host "  OK: Celery worker started (PID: $($celeryJob.Id))" -ForegroundColor Green
 
 # -------------------------------------------
-# 6. Start Streamlit Frontend (background)
+# 7. Start Streamlit Frontend (background)
 # -------------------------------------------
-Write-Host "[6/6] Starting Streamlit frontend..." -ForegroundColor Yellow
+Write-Host "[7/7] Starting Streamlit frontend..." -ForegroundColor Yellow
+Stop-PortProcess -Port 8501
 
-$stJob = Start-Process -FilePath "python" -ArgumentList "-m streamlit run frontend/app.py --server.port 8501 --server.headless true" -WorkingDirectory $PROJECT_DIR -PassThru -WindowStyle Minimized
-Start-Sleep -Seconds 3
-Write-Host "  ✅ Streamlit running at http://localhost:8501 (PID: $($stJob.Id))" -ForegroundColor Green
+$stJob = Start-Process -FilePath "python" `
+    -ArgumentList "-m streamlit run frontend/app.py --server.port 8501 --server.headless true" `
+    -WorkingDirectory $PROJECT_DIR `
+    -PassThru -WindowStyle Minimized
+
+$stJob.Id | Out-File "$pidDir\streamlit.pid" -Force
+
+Write-Host "  Waiting for Streamlit..." -ForegroundColor DarkGray
+if (Wait-ForEndpoint -Url "http://localhost:8501") {
+    Write-Host "  OK: Streamlit running at http://localhost:8501 (PID: $($stJob.Id))" -ForegroundColor Green
+} else {
+    Write-Host "  WARNING: Streamlit may not be ready yet - check logs" -ForegroundColor DarkYellow
+}
 
 # -------------------------------------------
 # Done!
@@ -113,13 +181,12 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "    DevAssist AI is READY!              " -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "  🌐 Frontend:  http://localhost:8501" -ForegroundColor White
-Write-Host "  🔌 API:       http://127.0.0.1:8000" -ForegroundColor White
-Write-Host "  📖 API Docs:  http://127.0.0.1:8000/docs" -ForegroundColor White
-Write-Host "  🩺 Health:    http://127.0.0.1:8000/health" -ForegroundColor White
+Write-Host "  Frontend:  http://localhost:8501" -ForegroundColor White
+Write-Host "  API:       http://127.0.0.1:8000" -ForegroundColor White
+Write-Host "  API Docs:  http://127.0.0.1:8000/docs" -ForegroundColor White
+Write-Host "  Health:    http://127.0.0.1:8000/health" -ForegroundColor White
 Write-Host ""
-Write-Host "  To stop: Close the minimized terminal windows or run .\stop.ps1" -ForegroundColor DarkGray
+Write-Host "  PIDs saved to .pids\ - run .\stop.ps1 to shut everything down." -ForegroundColor DarkGray
 Write-Host ""
 
-# Open browser
 Start-Process "http://localhost:8501"
