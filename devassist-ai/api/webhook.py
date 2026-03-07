@@ -35,7 +35,7 @@ def _verify_signature(payload: bytes, signature: str) -> bool:
     if not settings.WEBHOOK_SECRET:
         return True  # No secret configured — skip verification (dev mode)
 
-    expected = "sha256=" + hmac.new(
+    expected = "sha256=" + hmac.HMAC(
         settings.WEBHOOK_SECRET.encode(),
         payload,
         hashlib.sha256,

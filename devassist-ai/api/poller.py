@@ -65,9 +65,9 @@ class GitHubPoller:
     def _check_for_updates(self):
         """Check GitHub for new or updated PRs."""
         try:
-            from github import Github
-            gh = Github(self.settings.GITHUB_TOKEN)
-            repo = gh.get_repo(self.settings.GITHUB_REPO)
+            from agents.tools.github_tool import get_github_client
+            client = get_github_client()
+            repo = client.repo
 
             open_prs = list(repo.get_pulls(state="open", sort="updated", direction="desc"))
             logger.debug(f"Polled {len(open_prs)} open PRs")
