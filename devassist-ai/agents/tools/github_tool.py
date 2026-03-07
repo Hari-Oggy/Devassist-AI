@@ -1,20 +1,38 @@
 import os
-from github import Github, GithubException
+from github import Github, GithubException, Auth
 from dotenv import load_dotenv
+from core.config import get_settings
 
 load_dotenv()
 
 class GitHubClient:
     def __init__(self):
-        token = os.getenv("GITHUB_TOKEN")
-        if not token or token == "your_github_personal_access_token_here":
-            raise ValueError("GITHUB_TOKEN is missing or not configured. Please set a valid PAT in .env.")
-            
-        repo_name = os.getenv("GITHUB_REPO")
+        settings = get_settings()
+        repo_name = settings.GITHUB_REPO
         if not repo_name or repo_name == "owner/repository-name":
             raise ValueError("GITHUB_REPO is missing or not configured. Please set owner/repository-name in .env.")
-            
-        self.github = Github(token)
+
+        # Try GitHub App auth first (bot identity), fall back to PAT
+        if settings.GITHUB_APP_ID and settings.GITHUB_APP_PRIVATE_KEY_PATH and settings.GITHUB_APP_INSTALLATION_ID:
+            try:
+                key_path = settings.GITHUB_APP_PRIVATE_KEY_PATH
+                with open(key_path, "r") as f:
+                    private_key = f.read()
+                app_auth = Auth.AppAuth(settings.GITHUB_APP_ID, private_key)
+                installation_auth = app_auth.get_installation_auth(settings.GITHUB_APP_INSTALLATION_ID)
+                self.github = Github(auth=installation_auth)
+                self._auth_mode = "app"
+                print(f"✅ GitHub App authenticated (App ID: {settings.GITHUB_APP_ID})")
+            except Exception as e:
+                raise ValueError(f"GitHub App authentication failed: {e}. Check GITHUB_APP_ID, key path, and installation ID.")
+        else:
+            # Fallback: Personal Access Token
+            token = settings.GITHUB_TOKEN or os.getenv("GITHUB_TOKEN")
+            if not token or token == "your_github_personal_access_token_here":
+                raise ValueError("GITHUB_TOKEN is missing or not configured. Please set a valid PAT in .env.")
+            self.github = Github(token)
+            self._auth_mode = "pat"
+
         try:
             self.repo = self.github.get_repo(repo_name)
         except GithubException as e:
@@ -26,25 +44,72 @@ class GitHubClient:
         try:
             pr = self.repo.get_pull(pr_number)
             files = pr.get_files()
-            
+            files_list = list(files)  # materialize so we can count
+
+            settings = get_settings()
+            max_total = settings.MAX_DIFF_SIZE
+            max_per_file = max_total // max(len(files_list), 1)
+
             output = [f"PR #{pr_number}: {pr.title}\n\nChanged Files:\n"]
-            for file in files:
+            for file in files_list:
                 status = file.status
                 additions = file.additions
                 deletions = file.deletions
                 patch = file.patch or "None"
                 filename = file.filename
-                
+
+                # Truncate per-file to spread budget evenly
+                if len(patch) > max_per_file:
+                    patch = patch[:max_per_file] + f"\n... [truncated, {len(file.patch)} chars total]"
+
                 output.append(f"FILE: {filename} ({status}) +{additions}/-{deletions}\nDIFF:\n{patch}\n---\n")
-            
+
             full_output = "".join(output)
-            if len(full_output) > 8000:
-                return full_output[:8000] + "\n... [Output truncated to 8000 characters]"
+            # Final safety cap
+            if len(full_output) > max_total:
+                return full_output[:max_total] + f"\n... [Output truncated to {max_total} characters]"
             return full_output
         except GithubException as e:
             if e.status == 404:
                 return f"Error: Pull request #{pr_number} not found."
             return f"Error fetching PR diff: {str(e)}"
+
+    # Extensions to skip during review (binary, generated, non-source)
+    SKIP_EXTENSIONS = {
+        '.class', '.pyc', '.pyo', '.o', '.so', '.dll', '.exe',
+        '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.svg', '.webp',
+        '.woff', '.woff2', '.ttf', '.eot',
+        '.zip', '.tar', '.gz', '.jar', '.war',
+        '.lock', '.map', '.min.js', '.min.css',
+        '.pdf', '.doc', '.docx',
+    }
+
+    def get_reviewable_files(self, pr_number: int) -> list[dict]:
+        """
+        Return only files with reviewable source code patches.
+        Filters out binary files, files with no patch, and non-source extensions.
+        """
+        try:
+            pr = self.repo.get_pull(pr_number)
+            result = []
+            for file in pr.get_files():
+                # Skip files with no patch (binary, deleted binary, etc.)
+                if not file.patch:
+                    continue
+                # Skip non-source extensions
+                ext = os.path.splitext(file.filename)[1].lower()
+                if ext in self.SKIP_EXTENSIONS:
+                    continue
+                result.append({
+                    "filename": file.filename,
+                    "patch": file.patch,
+                    "status": file.status,
+                    "additions": file.additions,
+                    "deletions": file.deletions,
+                })
+            return result
+        except GithubException:
+            return []
 
     def get_pr_files(self, pr_number: int) -> list[str]:
         try:
@@ -86,7 +151,14 @@ class GitHubClient:
             commit = self.repo.get_commit(commit_sha)
             # Add bot marker for identification
             marked_body = f"{body}\n<!-- devassist-ai -->"
-            pr.create_review_comment(marked_body, commit, file_path, line)
+            # Use keyword args — positional 4th arg is the deprecated 'position' param
+            pr.create_review_comment(
+                body=marked_body,
+                commit=commit,
+                path=file_path,
+                line=line,
+                side="RIGHT",
+            )
             return True
         except Exception as e:
             print(f"Error posting comment to PR #{pr_number} on {file_path}:{line}: {e}")

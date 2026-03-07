@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     GITHUB_TOKEN: Optional[str] = Field(default=None, description="GitHub Personal Access Token")
     GITHUB_REPO: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format")
 
+    # --- GitHub App (Bot Identity) ---
+    GITHUB_APP_ID: Optional[int] = Field(default=None, description="GitHub App ID for bot identity")
+    GITHUB_APP_PRIVATE_KEY_PATH: Optional[str] = Field(default=None, description="Path to .pem private key file for GitHub App")
+    GITHUB_APP_INSTALLATION_ID: Optional[int] = Field(default=None, description="GitHub App installation ID for the target repo")
+
     # --- RAG Configuration ---
     CODEBASE_PATH: str = Field(default="./local_repo", description="Path to the codebase to index")
     FAISS_INDEX_PATH: str = Field(default="./data/faiss_index", description="Path to FAISS index storage")

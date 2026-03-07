@@ -17,16 +17,27 @@ STATE_FILE = Path("data/review_state.json")
 BOT_MARKER = "<!-- devassist-ai -->"
 
 
+_redis_client = None
+_redis_checked = False
+
+
 def _get_redis():
-    """Try to get a Redis connection. Returns None if unavailable."""
+    """Try to get a Redis connection. Returns None if unavailable. Cached at module level."""
+    global _redis_client, _redis_checked
+    if _redis_checked:
+        return _redis_client
+    _redis_checked = True
     try:
         import redis
         settings = get_settings()
-        r = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        r = redis.from_url(settings.REDIS_URL, decode_responses=True, socket_timeout=1, socket_connect_timeout=1)
         r.ping()
-        return r
+        _redis_client = r
+        logger.info("Redis connected successfully")
     except Exception:
-        return None
+        logger.warning("Redis unavailable — using JSON file fallback for all state operations")
+        _redis_client = None
+    return _redis_client
 
 
 def _load_json_state() -> dict:

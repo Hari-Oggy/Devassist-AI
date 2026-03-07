@@ -31,21 +31,26 @@ class ReviewAgent:
         self.audit_log: list[str] = []
 
     def review_pr(self, pr_number: int) -> dict:
-        """Full PR review pipeline: fetch diff → gather context → call LLM → post comments."""
+        """Full PR review pipeline: fetch files → review each file individually → post comments."""
         self.audit_log = []
         request_id = generate_request_id()
         self._log(f"[{request_id}] Starting review for PR #{pr_number}")
 
-        # 1. Fetch PR diff
-        diff = self.github_client.get_pr_diff(pr_number)
-        if diff.startswith("Error"):
-            self._log(f"Failed to fetch diff: {diff}")
-            return {"pr_number": pr_number, "success": False, "error": diff, "comments": [], "audit_log": self.audit_log}
+        # 1. Fetch reviewable files (filters out binary, .class, etc.)
+        reviewable_files = self.github_client.get_reviewable_files(pr_number)
+        all_changed_files = self.github_client.get_pr_files(pr_number)
+        self._log(f"Found {len(all_changed_files)} changed files, {len(reviewable_files)} reviewable")
 
-        changed_files = self.github_client.get_pr_files(pr_number)
-        self._log(f"Found {len(changed_files)} changed files")
+        if not reviewable_files:
+            self._log("No reviewable source files found in this PR")
+            return {
+                "pr_number": pr_number, "success": True,
+                "comments": [], "files_reviewed": all_changed_files,
+                "audit_log": self.audit_log,
+                "model_used": "", "provider_used": "",
+            }
 
-        # 2. Gather codebase context via RAG
+        # 2. Gather codebase context via RAG (once for the whole PR)
         context = ""
         try:
             context = self.retriever.get_context("code review patterns and conventions", k=3)
@@ -53,61 +58,75 @@ class ReviewAgent:
         except Exception as e:
             self._log(f"RAG context unavailable: {e}")
 
-        # 3. Run linter on changed .py files (best-effort)
-        lint_results = ""
-        for f in changed_files:
-            if f.endswith(".py"):
+        # 3. Select system prompt based on provider
+        if self.settings.LLM_PROVIDER == "local":
+            system_prompt = load_prompt("review_prompt_local")
+        else:
+            system_prompt = load_prompt("review_prompt")
+
+        # 4. Review each file individually (per-file architecture)
+        all_parsed_comments = []
+        last_response = None
+
+        for file_data in reviewable_files:
+            filename = file_data["filename"]
+            patch = file_data["patch"]
+            self._log(f"Reviewing {filename} ({file_data['additions']}+/{file_data['deletions']}-) ...")
+
+            # Build focused prompt for this single file
+            user_content = (
+                f"Review the changes in this file and provide inline comments:\n\n"
+                f"File: {filename}\n"
+                f"Status: {file_data['status']}\n\n"
+                f"{patch}"
+            )
+            if context:
+                user_content += f"\n\n--- Codebase Context ---\n{context}"
+
+            # Run linter for .py files
+            if filename.endswith(".py"):
                 try:
-                    result = pylint_analysis.invoke(f)
-                    if result and "No issues found" not in result:
-                        lint_results += f"\n{result}\n"
+                    lint_result = pylint_analysis.invoke(filename)
+                    if lint_result and "No issues found" not in lint_result:
+                        user_content += f"\n\n--- Linter Results ---\n{lint_result}"
                 except Exception:
                     pass
 
-        # 4. Build LLM request
-        system_prompt = load_prompt("review_prompt")
-        user_content = f"Review this PR diff and provide inline comments:\n\n{diff}"
-        if context:
-            user_content += f"\n\n--- Codebase Context ---\n{context}"
-        if lint_results:
-            user_content += f"\n\n--- Linter Results ---\n{lint_results}"
+            llm_request = LLMRequest(
+                task_type="code_review",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=self.settings.REVIEW_TEMPERATURE,
+                metadata={"request_id": request_id, "pr_number": pr_number, "file": filename},
+            )
 
-        llm_request = LLMRequest(
-            task_type="code_review",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=self.settings.REVIEW_TEMPERATURE,
-            metadata={"request_id": request_id, "pr_number": pr_number},
-        )
+            llm_response = self.router.generate(llm_request)
+            last_response = llm_response
 
-        # 5. Call the Router
-        self._log("Sending to LLM Router...")
-        llm_response = self.router.generate(llm_request)
+            if not llm_response.success:
+                self._log(f"  LLM call failed for {filename}: {llm_response.error}")
+                continue
 
-        if not llm_response.success:
-            self._log(f"LLM call failed: {llm_response.error}")
-            return {
-                "pr_number": pr_number, "success": False,
-                "error": llm_response.error, "comments": [],
-                "audit_log": self.audit_log,
-                "model_used": llm_response.model,
-                "provider_used": llm_response.provider,
-            }
+            self._log(f"  Response: {llm_response.provider}/{llm_response.model} "
+                       f"({llm_response.tokens_input}+{llm_response.tokens_output} tokens, {llm_response.latency:.1f}s)")
 
-        self._log(f"Response received from {llm_response.provider}/{llm_response.model} "
-                   f"({llm_response.tokens_input}+{llm_response.tokens_output} tokens, {llm_response.latency:.1f}s)")
+            # Parse comments from this file's review
+            parsed_comments, parse_error = self._parse_comments(llm_response.content)
+            if parse_error:
+                self._log(f"  Warning: Could not parse JSON comments for {filename}")
+            else:
+                # Ensure file path is set correctly on each comment
+                for c in parsed_comments:
+                    c["file"] = filename
+                all_parsed_comments.extend(parsed_comments)
+                self._log(f"  Found {len(parsed_comments)} comment(s)")
 
-        # 6. Parse comments from LLM output
-        parsed_comments, parse_error = self._parse_comments(llm_response.content)
-        if parse_error:
-            self._log("Warning: Could not parse JSON comments from LLM output")
-
-        # 7. Post inline comments on GitHub
+        # 5. Post all collected comments to GitHub
         commit_sha = self.github_client.get_latest_commit_sha(pr_number)
         posted = []
-        for comment in parsed_comments:
+        for comment in all_parsed_comments:
             file_path = comment.get("file")
             line = comment.get("line")
             body = f"**[{comment.get('severity', 'suggestion').upper()}]** {comment.get('comment')}"
@@ -119,17 +138,17 @@ class ReviewAgent:
                     posted.append(comment)
                     self._log(f"Posted comment on {file_path}:{line}")
             else:
-                self._log(f"Skipped {file_path}:{line} (not in diff)")
+                self._log(f"Skipped {file_path}:{line} (not in diff hunk)")
 
-        self._log(f"Review complete. {len(posted)}/{len(parsed_comments)} comments posted.")
+        self._log(f"Review complete. {len(posted)}/{len(all_parsed_comments)} comments posted across {len(reviewable_files)} files.")
         return {
             "pr_number": pr_number,
             "comments": posted,
-            "files_reviewed": changed_files,
+            "files_reviewed": [f["filename"] for f in reviewable_files],
             "audit_log": self.audit_log,
-            "model_used": llm_response.model,
-            "provider_used": llm_response.provider,
-            "fallback_used": llm_response.fallback_used,
+            "model_used": last_response.model if last_response else "",
+            "provider_used": last_response.provider if last_response else "",
+            "fallback_used": last_response.fallback_used if last_response else False,
             "success": True,
         }
 
@@ -337,7 +356,10 @@ class ReviewAgent:
         return "\n".join(lines)
 
     def _parse_comments(self, output: str) -> tuple[list, bool]:
-        match = re.search(r'\[\s*\{.*?\}\s*\]', output, re.DOTALL)
+        # Strip markdown code fences that local models add (```json ... ```)
+        cleaned = re.sub(r'```(?:json)?\s*', '', output)
+        cleaned = re.sub(r'```\s*$', '', cleaned.strip())
+        match = re.search(r'\[\s*\{.*?\}\s*\]', cleaned, re.DOTALL)
         if not match:
             return [], True
         try:

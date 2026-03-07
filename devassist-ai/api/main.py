@@ -86,14 +86,21 @@ doc_history: list = []
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
+_celery_ok = None
+
+
 def _celery_available() -> bool:
-    """Check if Celery/Redis is reachable."""
+    """Check if Celery/Redis is reachable. Cached after first check."""
+    global _celery_ok
+    if _celery_ok is not None:
+        return _celery_ok
     try:
         from taskqueue.celery_app import celery_app
-        celery_app.connection().ensure_connection(max_retries=1, timeout=2)
-        return True
+        celery_app.connection().ensure_connection(max_retries=1, timeout=1)
+        _celery_ok = True
     except Exception:
-        return False
+        _celery_ok = False
+    return _celery_ok
 
 
 # ─── Events ───────────────────────────────────────────────────────────────────
