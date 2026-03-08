@@ -21,19 +21,45 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def poll_task(task_id: str, max_wait: int = 180) -> dict:
-    """Poll for async task result."""
+def poll_task(task_id: str, max_wait: int = 900) -> dict:
+    """
+    Poll for async task result with live progress updates.
+    
+    max_wait raised to 900s (15 min) to accommodate local LLM reviews
+    which can take 300-500s depending on file count and model speed.
+    """
     start = time.time()
-    while time.time() - start < max_wait:
+    status_placeholder = st.empty()
+    
+    while True:
+        elapsed = int(time.time() - start)
+        
+        if elapsed >= max_wait:
+            status_placeholder.empty()
+            return {"status": "TIMEOUT", "error": f"Task did not complete after {max_wait}s."}
+        
         try:
             resp = requests.get(f"{API_BASE_URL}/task/{task_id}", timeout=10)
             data = resp.json()
-            if data.get("status") in ("SUCCESS", "FAILURE"):
+            task_status = data.get("status", "UNKNOWN")
+            
+            if task_status == "SUCCESS":
+                status_placeholder.empty()
                 return data
-            time.sleep(3)
+            elif task_status == "FAILURE":
+                status_placeholder.empty()
+                error_msg = data.get("error", data.get("result", "Task failed"))
+                return {"status": "FAILURE", "error": str(error_msg)}
+            else:
+                # Show live progress — task is still running
+                minutes, seconds = divmod(elapsed, 60)
+                status_placeholder.caption(
+                    f"⏳ Review in progress... ({minutes}m {seconds}s elapsed) — Status: `{task_status}`"
+                )
         except Exception:
-            time.sleep(3)
-    return {"status": "TIMEOUT", "error": "Task did not complete in time."}
+            pass  # Network blip — retry on next iteration
+        
+        time.sleep(5)
 
 
 with st.sidebar:

@@ -1,9 +1,12 @@
 import os
+import re
 from github import Github, GithubException, Auth
 from dotenv import load_dotenv
 from core.config import get_settings
+from core.logger import get_logger
 
 load_dotenv()
+logger = get_logger("agents.github_tool")
 
 class GitHubClient:
     def __init__(self):
@@ -22,7 +25,7 @@ class GitHubClient:
                 installation_auth = app_auth.get_installation_auth(settings.GITHUB_APP_INSTALLATION_ID)
                 self.github = Github(auth=installation_auth)
                 self._auth_mode = "app"
-                print(f"✅ GitHub App authenticated (App ID: {settings.GITHUB_APP_ID})")
+                logger.info(f"GitHub App authenticated (App ID: {settings.GITHUB_APP_ID})")
             except Exception as e:
                 raise ValueError(f"GitHub App authentication failed: {e}. Check GITHUB_APP_ID, key path, and installation ID.")
         else:
@@ -129,7 +132,6 @@ class GitHubClient:
                     current_line = -1
                     for line in patch.split('\n'):
                         if line.startswith('@@'):
-                            import re
                             match = re.search(r'\+([0-9]+)', line)
                             if match:
                                 current_line = int(match.group(1))
@@ -161,7 +163,7 @@ class GitHubClient:
             )
             return True
         except Exception as e:
-            print(f"Error posting comment to PR #{pr_number} on {file_path}:{line}: {e}")
+            logger.error(f"Error posting comment to PR #{pr_number} on {file_path}:{line}: {e}")
             return False
 
     def get_latest_commit_sha(self, pr_number: int) -> str:
@@ -170,7 +172,7 @@ class GitHubClient:
             commits = pr.get_commits()
             return commits[commits.totalCount - 1].sha
         except Exception as e:
-            print(f"Error fetching latest commit for PR #{pr_number}: {e}")
+            logger.error(f"Error fetching latest commit for PR #{pr_number}: {e}")
             return ""
 
     # ─── New methods for incremental reviews ──────────────────────────────
@@ -189,11 +191,13 @@ class GitHubClient:
                 output.append(f"FILE: {file.filename} ({file.status}) +{file.additions}/-{file.deletions}\nDIFF:\n{patch}\n---\n")
 
             full_output = "".join(output)
-            if len(full_output) > 15000:
-                return full_output[:15000] + "\n... [Truncated to 15000 characters]"
+            settings = get_settings()
+            max_size = settings.MAX_DIFF_SIZE
+            if len(full_output) > max_size:
+                return full_output[:max_size] + f"\n... [Truncated to {max_size} characters]"
             return full_output
         except Exception as e:
-            print(f"Error fetching incremental diff for PR #{pr_number}: {e}")
+            logger.error(f"Error fetching incremental diff for PR #{pr_number}: {e}")
             return ""
 
     def post_general_comment(self, pr_number: int, body: str) -> bool:
@@ -204,7 +208,7 @@ class GitHubClient:
             pr.create_issue_comment(marked_body)
             return True
         except Exception as e:
-            print(f"Error posting summary comment to PR #{pr_number}: {e}")
+            logger.error(f"Error posting summary comment to PR #{pr_number}: {e}")
             return False
 
     def comment_already_exists(self, pr_number: int, file_path: str, line: int, body_substring: str) -> bool:
@@ -214,7 +218,7 @@ class GitHubClient:
             for comment in pr.get_review_comments():
                 if ("<!-- devassist-ai -->" in (comment.body or "")
                         and comment.path == file_path
-                        and comment.position == line
+                        and getattr(comment, 'line', comment.position) == line
                         and body_substring in (comment.body or "")):
                     return True
             return False
@@ -226,7 +230,7 @@ class GitHubClient:
         try:
             pr = self.repo.get_pull(pr_number)
             return [
-                {"id": c.id, "body": c.body, "path": c.path, "line": c.position}
+                {"id": c.id, "body": c.body, "path": c.path, "line": getattr(c, 'line', c.position)}
                 for c in pr.get_review_comments()
                 if "<!-- devassist-ai -->" in (c.body or "")
             ]
@@ -241,7 +245,7 @@ class GitHubClient:
             pr.create_review_comment_reply(comment_id, marked_body)
             return True
         except Exception as e:
-            print(f"Error replying to comment {comment_id}: {e}")
+            logger.error(f"Error replying to comment {comment_id}: {e}")
             return False
 
     def get_comment_context(self, comment_id: int) -> dict:

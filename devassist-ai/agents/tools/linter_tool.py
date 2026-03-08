@@ -2,9 +2,8 @@ import subprocess
 import tempfile
 import os
 import json
-from langchain_core.tools import tool
 
-@tool
+
 def pylint_analysis(file_path: str) -> str:
     """Runs Pylint static analysis on a Python file. Input should be an absolute file path. Returns linting results with line numbers and issue descriptions."""
     if not os.path.exists(file_path):
@@ -44,7 +43,6 @@ def pylint_analysis(file_path: str) -> str:
     except Exception as e:
         return f"Error running pylint: {str(e)}"
 
-@tool
 def eslint_analysis(file_path: str) -> str:
     """Runs ESLint static analysis on a JavaScript/TypeScript file. Input should be an absolute file path."""
     if not os.path.exists(file_path):
@@ -97,4 +95,84 @@ def eslint_analysis(file_path: str) -> str:
     except Exception as e:
         return f"Error running eslint: {str(e)}"
 
-LINTER_TOOLS = [pylint_analysis, eslint_analysis]
+
+def checkstyle_analysis(file_path: str) -> str:
+    """Runs Checkstyle or javac static analysis on a Java file. Input should be an absolute file path."""
+    if not os.path.exists(file_path):
+        return f"Error: File {file_path} does not exist."
+    if not file_path.endswith('.java'):
+        return f"Error: File {file_path} is not a Java file."
+
+    # Try checkstyle first (more comprehensive)
+    try:
+        result = subprocess.run(
+            ["checkstyle", "-c", "/google_checks.xml", "-f", "plain", file_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        output = (result.stdout + result.stderr).strip()
+        if output and "Starting audit" in output:
+            lines = [l for l in output.splitlines()
+                     if l.strip() and "Starting audit" not in l and "Audit done" not in l]
+            if not lines:
+                return "No issues found."
+            formatted = [f"CHECKSTYLE RESULTS for {os.path.basename(file_path)}:\n"]
+            formatted.extend(lines[:20])  # Cap at 20 issues
+            return "\n".join(formatted)
+    except FileNotFoundError:
+        pass  # Checkstyle not installed, try javac
+    except Exception:
+        pass
+
+    # Fallback: javac syntax check (always available if JDK is installed)
+    try:
+        result = subprocess.run(
+            ["javac", "-Xlint:all", "-d", tempfile.gettempdir(), file_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        errors = result.stderr.strip()
+        if not errors:
+            return "No issues found."
+        formatted = [f"JAVAC LINT RESULTS for {os.path.basename(file_path)}:\n"]
+        for line in errors.splitlines()[:15]:  # Cap at 15 lines
+            formatted.append(line)
+        return "\n".join(formatted)
+    except FileNotFoundError:
+        return "No Java linter available (checkstyle/javac not found)."
+    except subprocess.TimeoutExpired:
+        return "Error: Java analysis timed out after 30 seconds."
+    except Exception as e:
+        return f"Error running Java linter: {str(e)}"
+
+
+# ─── Extension → Linter Mapping ──────────────────────────────────────────────
+
+LINTER_MAP = {
+    ".py": pylint_analysis,
+    ".js": eslint_analysis,
+    ".ts": eslint_analysis,
+    ".jsx": eslint_analysis,
+    ".tsx": eslint_analysis,
+    ".java": checkstyle_analysis,
+}
+
+
+def run_linter(filename: str) -> str:
+    """
+    Run the appropriate linter for a file based on its extension.
+    Returns linter output string, or empty string if no linter available.
+    """
+    ext = os.path.splitext(filename)[1].lower()
+    linter = LINTER_MAP.get(ext)
+    if not linter:
+        return ""
+    try:
+        result = linter(filename)
+        if result and "No issues found" not in result and "not available" not in result:
+            return result
+    except Exception:
+        pass
+    return ""
+
+
+LINTER_TOOLS = [pylint_analysis, eslint_analysis, checkstyle_analysis]
+

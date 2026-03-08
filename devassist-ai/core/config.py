@@ -48,7 +48,7 @@ class Settings(BaseSettings):
 
     # --- Retry / Resilience ---
     LLM_MAX_RETRIES: int = Field(default=3, description="Max retries for LLM API calls")
-    REVIEW_TIMEOUT: int = Field(default=120, description="Timeout in seconds for review tasks")
+    REVIEW_TIMEOUT: int = Field(default=300, description="Timeout in seconds for review tasks (per-file reviews need more time)")
     DOC_TIMEOUT: int = Field(default=120, description="Timeout in seconds for documentation tasks")
 
     # --- Cache ---
@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     REVIEW_DEBOUNCE_SECONDS: int = Field(default=60, description="Min seconds between reviews of the same PR")
     SKIP_DRAFT_PRS: bool = Field(default=True, description="Skip draft PRs in webhook/poller")
     REQUIRE_LABEL: str = Field(default="", description="If set, only review PRs with this label")
+
+    # --- CORS / API Security ---
+    CORS_ORIGINS: str = Field(default="http://localhost:8501", description="Comma-separated allowed CORS origins")
+    API_KEY: str = Field(default="", description="API key to protect FastAPI endpoints (leave empty to disable)")
 
     model_config = {
         "env_file": ".env",

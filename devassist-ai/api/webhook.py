@@ -66,7 +66,7 @@ def _should_skip_pr(pr_data: dict) -> tuple[bool, str]:
 
 
 def _trigger_review(pr_number: int, action: str):
-    """Run the review pipeline with all protection layers."""
+    """Dispatch review to Celery worker (non-blocking). Falls back to sync if unavailable."""
     # Check debounce
     if should_debounce(pr_number):
         logger.info(f"PR #{pr_number} debounced — skipping review")
@@ -78,7 +78,16 @@ def _trigger_review(pr_number: int, action: str):
         logger.info(f"PR #{pr_number} in backoff — {backoff}s remaining")
         return {"status": "backoff", "pr_number": pr_number, "retry_in": backoff}
 
-    # Acquire lock
+    # Try async dispatch via Celery
+    try:
+        from workers.review_worker import run_review
+        task = run_review.delay(pr_number)
+        logger.info(f"PR #{pr_number} review queued as task {task.id}")
+        return {"status": "queued", "pr_number": pr_number, "task_id": task.id}
+    except Exception as celery_err:
+        logger.warning(f"Celery unavailable ({celery_err}), falling back to sync review")
+
+    # Sync fallback — acquire lock to prevent concurrent reviews
     if not acquire_review_lock(pr_number):
         logger.info(f"PR #{pr_number} already locked — review in progress")
         return {"status": "locked", "pr_number": pr_number}
@@ -105,14 +114,27 @@ def _trigger_review(pr_number: int, action: str):
 
 
 def _trigger_conversation(pr_number: int, comment_data: dict):
-    """Respond to a developer's reply to a bot comment."""
+    """Dispatch conversation response to Celery worker (non-blocking). Falls back to sync."""
+    comment_id = comment_data.get("id")
+    user_comment = comment_data.get("body", "")
+
+    # Try async dispatch via Celery
+    try:
+        from workers.conversation_worker import run_conversation
+        task = run_conversation.delay(pr_number, comment_id, user_comment)
+        logger.info(f"Conversation for PR #{pr_number} queued as task {task.id}")
+        return {"status": "queued", "pr_number": pr_number, "task_id": task.id}
+    except Exception as celery_err:
+        logger.warning(f"Celery unavailable ({celery_err}), falling back to sync conversation")
+
+    # Sync fallback
     try:
         from agents.conversation_agent import ConversationAgent
         agent = ConversationAgent()
         return agent.respond(
             pr_number=pr_number,
-            comment_id=comment_data.get("id"),
-            user_comment=comment_data.get("body", ""),
+            comment_id=comment_id,
+            user_comment=user_comment,
         )
     except Exception as e:
         logger.error(f"Conversation response failed: {e}")

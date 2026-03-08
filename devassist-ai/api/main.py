@@ -29,7 +29,7 @@ app = FastAPI(title="DevAssist AI API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -87,13 +87,17 @@ doc_history: list = []
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 _celery_ok = None
+_celery_check_time = 0.0
 
 
 def _celery_available() -> bool:
-    """Check if Celery/Redis is reachable. Cached after first check."""
-    global _celery_ok
-    if _celery_ok is not None:
+    """Check if Celery/Redis is reachable. Re-checks every 30 seconds."""
+    import time as _time
+    global _celery_ok, _celery_check_time
+    now = _time.time()
+    if _celery_ok is not None and (now - _celery_check_time) < 30:
         return _celery_ok
+    _celery_check_time = now
     try:
         from taskqueue.celery_app import celery_app
         celery_app.connection().ensure_connection(max_retries=1, timeout=1)
@@ -101,6 +105,22 @@ def _celery_available() -> bool:
     except Exception:
         _celery_ok = False
     return _celery_ok
+
+
+# ─── API Key Auth ─────────────────────────────────────────────────────────────
+
+from fastapi import Security, Depends
+from fastapi.security import APIKeyHeader
+
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def verify_api_key(api_key: str = Security(_api_key_header)):
+    """Verify API key for protected endpoints. Skipped if API_KEY is not set."""
+    if settings.API_KEY and api_key != settings.API_KEY:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Invalid or missing X-API-Key")
+    return True
 
 
 # ─── Events ───────────────────────────────────────────────────────────────────
@@ -122,7 +142,7 @@ async def startup_event():
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
-@app.post("/review")
+@app.post("/review", dependencies=[Depends(verify_api_key)])
 async def create_review(request: ReviewRequest):
     """
     Start a PR review.
@@ -161,7 +181,7 @@ async def create_review(request: ReviewRequest):
         return ReviewResponse(pr_number=request.pr_number, timestamp=timestamp, success=False, error=error_msg)
 
 
-@app.post("/document")
+@app.post("/document", dependencies=[Depends(verify_api_key)])
 async def create_document(request: DocumentRequest):
     """
     Start documentation generation.
@@ -212,7 +232,14 @@ async def get_task_status(task_id: str):
             "status": result.status,
         }
         if result.ready():
-            response["result"] = result.get(timeout=5)
+            if result.successful():
+                try:
+                    response["result"] = result.get(timeout=5)
+                except Exception as e:
+                    response["result"] = {"success": False, "error": f"Failed to retrieve result: {e}"}
+            else:
+                # Task raised an exception
+                response["error"] = str(result.result) if result.result else "Task failed with unknown error"
         return response
     except Exception as e:
         return {"task_id": task_id, "status": "error", "error": str(e)}

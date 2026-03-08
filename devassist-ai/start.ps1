@@ -145,7 +145,7 @@ if (Wait-ForEndpoint -Url "http://127.0.0.1:8000/health") {
 Write-Host "[6/7] Starting Celery worker..." -ForegroundColor Yellow
 
 $celeryJob = Start-Process -FilePath "python" `
-    -ArgumentList "-m celery -A core.celery_app worker --loglevel=info" `
+    -ArgumentList "-m celery -A taskqueue.celery_app worker --loglevel=info --pool=solo --purge" `
     -WorkingDirectory $PROJECT_DIR `
     -PassThru -WindowStyle Minimized
 

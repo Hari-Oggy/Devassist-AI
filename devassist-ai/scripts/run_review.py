@@ -12,7 +12,7 @@ load_dotenv()
 
 from agents.review_agent import ReviewAgent
 
-PR_NUMBER = 2  # https://github.com/HAREESH14/casestudy/pull/1
+PR_NUMBER = 1  # https://github.com/HAREESH14/casestudy/pull/1
 
 def main():
     print("=== DevAssist AI — Code Review ===")

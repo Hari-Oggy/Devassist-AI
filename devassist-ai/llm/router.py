@@ -49,14 +49,25 @@ def _make_cache_key(request: LLMRequest) -> str:
     return "llm_cache:" + hashlib.sha256(payload.encode()).hexdigest()
 
 
+_redis_client = None
+_redis_checked = False
+
+
 def _get_redis():
-    """Lazy Redis client for caching."""
+    """Lazy Redis client for caching. Cached after first attempt."""
+    global _redis_client, _redis_checked
+    if _redis_checked:
+        return _redis_client
+    _redis_checked = True
     try:
         import redis
         settings = get_settings()
-        return redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        r = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True, socket_timeout=1)
+        r.ping()
+        _redis_client = r
     except Exception:
-        return None
+        _redis_client = None
+    return _redis_client
 
 
 class LLMRouter:

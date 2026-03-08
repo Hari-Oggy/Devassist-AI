@@ -34,3 +34,8 @@ celery_app.conf.update(
 
 # Auto-discover tasks in the workers package
 celery_app.autodiscover_tasks(["workers"])
+
+# Explicit include as fallback (autodiscover can fail silently on Windows)
+celery_app.conf.update(
+    include=["workers.review_worker", "workers.doc_worker", "workers.conversation_worker"],
+)
