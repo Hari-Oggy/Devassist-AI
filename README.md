@@ -60,3 +60,13 @@ The router automatically falls back to other providers if the primary fails.
 - **Health Check:** http://localhost:8000/health
 
 <img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/42361dd9-333a-4164-9878-27da05599428" />
+
+#REUSLT
+<img width="1920" height="1080" alt="Screenshot 2026-03-08 100442" src="https://github.com/user-attachments/assets/66ec43ed-7f5f-4691-9d79-c9ade427a845" />
+
+
+
+
+https://github.com/user-attachments/assets/662eb92e-4f4b-46a0-9f62-921fc1873c88
+
+
