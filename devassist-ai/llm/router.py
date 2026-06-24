@@ -39,6 +39,9 @@ def _get_provider(provider_name: str) -> BaseProvider:
     elif provider_name == "local":
         from providers.local_provider import LocalProvider
         return LocalProvider()
+    elif provider_name == "nvidia":
+        from providers.nvidia_provider import NvidiaProvider
+        return NvidiaProvider()
     else:
         raise ValueError(f"Unknown provider: {provider_name}")
 
@@ -90,6 +93,8 @@ class LLMRouter:
             return bool(s.ANTHROPIC_API_KEY) and s.ANTHROPIC_API_KEY not in placeholder_values
         elif provider_name == "gemini":
             return bool(s.GEMINI_API_KEY) and s.GEMINI_API_KEY not in placeholder_values
+        elif provider_name == "nvidia":
+            return bool(s.NVIDIA_API_KEY) and s.NVIDIA_API_KEY not in placeholder_values
         elif provider_name == "local":
             return True  # Local LLMs don't need an API key
         return False
@@ -183,12 +188,12 @@ class LLMRouter:
         # Remove models whose providers have no API key configured
         chain = [
             m for m in chain
-            if m in MODEL_REGISTRY and self._provider_is_available(MODEL_REGISTRY[m]["provider"])
+            if get_model_info(m) and self._provider_is_available(get_model_info(m)["provider"])
         ]
 
         # Filter models that require tools but model doesn't support them
         if request.tools:
-            chain = [m for m in chain if MODEL_REGISTRY.get(m, {}).get("supports_tools", False)]
+            chain = [m for m in chain if (get_model_info(m) or {}).get("supports_tools", False)]
 
         return chain
 

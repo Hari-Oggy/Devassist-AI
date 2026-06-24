@@ -6,6 +6,7 @@ Handles:
   - issue_comment.created → triggers conversation response
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -65,7 +66,7 @@ def _should_skip_pr(pr_data: dict) -> tuple[bool, str]:
     return False, ""
 
 
-def _trigger_review(pr_number: int, action: str):
+async def _trigger_review(pr_number: int, action: str, context: dict):
     """Dispatch review to Celery worker (non-blocking). Falls back to sync if unavailable."""
     # Check debounce
     if should_debounce(pr_number):
@@ -81,7 +82,7 @@ def _trigger_review(pr_number: int, action: str):
     # Try async dispatch via Celery
     try:
         from workers.review_worker import run_review
-        task = run_review.delay(pr_number)
+        task = run_review.delay(context)
         logger.info(f"PR #{pr_number} review queued as task {task.id}")
         return {"status": "queued", "pr_number": pr_number, "task_id": task.id}
     except Exception as celery_err:
@@ -95,7 +96,7 @@ def _trigger_review(pr_number: int, action: str):
     try:
         from agents.review_agent import ReviewAgent
         agent = ReviewAgent()
-        result = agent.review_pr_incremental(pr_number)
+        result = await asyncio.to_thread(agent.review_pr_incremental, pr_number)
 
         if result.get("success"):
             clear_failures(pr_number)
@@ -171,7 +172,21 @@ async def github_webhook(request: Request):
             return {"status": "skipped", "reason": reason}
 
         logger.info(f"Webhook: PR #{pr_number} {action} — triggering review")
-        result = _trigger_review(pr_number, action)
+        repo_data = data.get("repository", {})
+        context = {
+            "provider": "github",
+            "project_path": repo_data.get("full_name", ""),
+            "project_id": repo_data.get("id"),
+            "pr_number": pr_number,
+            "mr_title": pr_data.get("title", ""),
+            "mr_author": pr_data.get("user", {}).get("login", ""),
+            "source_branch": pr_data.get("head", {}).get("ref", ""),
+            "target_branch": pr_data.get("base", {}).get("ref", ""),
+            "is_draft": pr_data.get("draft", False),
+            "mr_url": pr_data.get("html_url", ""),
+            "last_commit_sha": pr_data.get("head", {}).get("sha", ""),
+        }
+        result = await _trigger_review(pr_number, action, context)
         return {"status": "review_triggered", "pr_number": pr_number, "result": result}
 
     # ─── Issue Comment Events (Conversation Threading) ────────────────────

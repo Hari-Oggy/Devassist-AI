@@ -10,3 +10,5 @@ dist/
 build/
 *.log
 .pids
+.agents/
+.pids/

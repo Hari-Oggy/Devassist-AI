@@ -14,7 +14,7 @@ class OpenAIProvider(BaseProvider):
 
     def generate(self, request: LLMRequest) -> LLMResponse:
         settings = get_settings()
-        model = request.metadata.get("model") or settings.LLM_MODEL
+        model = settings.LLM_MODEL or request.metadata.get("model") 
         temperature = request.temperature if request.temperature is not None else settings.LLM_TEMPERATURE
         max_tokens = request.max_tokens or settings.LLM_MAX_TOKENS
 
@@ -26,6 +26,8 @@ class OpenAIProvider(BaseProvider):
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             }
+            if request.task_type == "code_review":
+                kwargs["response_format"] = {"type": "json_object"}
             if request.tools:
                 kwargs["tools"] = request.tools
                 kwargs["tool_choice"] = "auto"

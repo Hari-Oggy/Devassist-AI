@@ -66,6 +66,22 @@ MODEL_REGISTRY: dict[str, dict] = {
         "supports_vision": True,
     },
 
+    # --- NVIDIA ---
+    "meta/llama-3.1-70b-instruct": {
+        "provider": "nvidia",
+        "context_window": 128000,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": False,
+    },
+    "meta/llama-3.1-8b-instruct": {
+        "provider": "nvidia",
+        "context_window": 128000,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": False,
+    },
+
     # --- Local LLM (defaults, user can override model name) ---
     "qwen2.5-7b-instruct": {
         "provider": "local",
@@ -101,6 +117,7 @@ MODEL_REGISTRY: dict[str, dict] = {
 # --- Fallback Chains (task_type -> ordered list of models to try) ---
 FALLBACK_CHAINS: dict[str, list[str]] = {
     "code_review": [
+        "meta/llama-3.1-70b-instruct",
         "qwen2.5-7b-instruct",
         "gpt-4o",
         "claude-3-5-sonnet-20241022",
@@ -109,6 +126,7 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
         "llama3",
     ],
     "documentation": [
+        "meta/llama-3.1-70b-instruct",
         "qwen2.5-7b-instruct",
         "claude-3-5-sonnet-20241022",
         "gpt-4o",
@@ -117,6 +135,7 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
         "llama3",
     ],
     "general": [
+        "meta/llama-3.1-8b-instruct",
         "qwen2.5-7b-instruct",
         "gpt-4o-mini",
         "gemini-2.5-flash",
@@ -128,7 +147,21 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
 
 def get_model_info(model_name: str) -> dict | None:
     """Returns capability info for a model, or None if not found."""
-    return MODEL_REGISTRY.get(model_name)
+    if model_name in MODEL_REGISTRY:
+        return MODEL_REGISTRY[model_name]
+    
+    # Fallback for dynamic/unregistered models configured by the user
+    from core.config import get_settings
+    settings = get_settings()
+    if model_name == settings.LLM_MODEL:
+        return {
+            "provider": settings.LLM_PROVIDER,
+            "context_window": 128000,
+            "supports_tools": False,
+            "supports_json": True,
+            "supports_vision": False,
+        }
+    return None
 
 
 def get_fallback_chain(task_type: str) -> list[str]:

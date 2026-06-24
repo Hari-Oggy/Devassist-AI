@@ -14,11 +14,13 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = Field(default=0.0, description="Default temperature for LLM calls")
     LLM_MAX_TOKENS: int = Field(default=4096, description="Default max tokens for LLM responses")
 
+    BASE_URL:str = Field(default="https://api.openai.com/v1",description="Base url nvidia free model endpoints")
     # Task-specific temperature overrides
     REVIEW_TEMPERATURE: float = Field(default=0.0, description="Temperature for code review tasks")
     DOC_TEMPERATURE: float = Field(default=0.2, description="Temperature for documentation tasks")
 
     # --- API Keys ---
+    NVIDIA_API_KEY:Optional[str]=Field(default=None,description="Nvidia API Key")
     OPENAI_API_KEY: Optional[str] = Field(default=None, description="OpenAI API Key")
     ANTHROPIC_API_KEY: Optional[str] = Field(default=None, description="Anthropic API Key")
     GEMINI_API_KEY: Optional[str] = Field(default=None, description="Google Gemini API Key")

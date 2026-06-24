@@ -12,6 +12,23 @@ services:
       timeout: 5s
       retries: 3
 
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=devassist
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d devassist"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   api:
     build: .
     ports:
@@ -20,11 +37,14 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/devassist
     volumes:
       - ./data:/app/data
       - ${CODEBASE_PATH:-.}:/app/local_repo:ro
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -40,26 +60,17 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/devassist
     volumes:
       - ./data:/app/data
       - ${CODEBASE_PATH:-.}:/app/local_repo:ro
     depends_on:
       redis:
         condition: service_healthy
-    restart: unless-stopped
-
-  frontend:
-    build: .
-    command: streamlit run frontend/app.py --server.port=8501 --server.address=0.0.0.0
-    ports:
-      - "8501:8501"
-    env_file:
-      - .env
-    environment:
-      - API_BASE_URL=http://api:8000
-    depends_on:
-      - api
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   faiss_data:
+  pgdata:

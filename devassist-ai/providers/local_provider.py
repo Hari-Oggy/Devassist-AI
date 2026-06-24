@@ -27,12 +27,18 @@ class LocalProvider(BaseProvider):
 
         start = time.time()
         try:
-            completion = self.client.chat.completions.create(
-                model=model,
-                messages=request.messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            from llm.registry import get_model_info
+            kwargs = {
+                "model": model,
+                "messages": request.messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            model_info = get_model_info(model)
+            if request.task_type == "code_review" and model_info and model_info.get("supports_json"):
+                kwargs["response_format"] = {"type": "json_object"}
+
+            completion = self.client.chat.completions.create(**kwargs)
             latency = time.time() - start
 
             choice = completion.choices[0]
