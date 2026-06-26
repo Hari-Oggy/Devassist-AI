@@ -53,18 +53,9 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "[3/7] Checking Redis..." -ForegroundColor Yellow
 $redisRunning = docker ps --filter "name=devassist-redis" --format "{{.Names}}" 2>$null
 if ($redisRunning -eq "devassist-redis") {
-    Write-Host "  OK: Redis already running" -ForegroundColor Green
+    Write-Host "  OK: Redis already running via Docker" -ForegroundColor Green
 } else {
-    $redisStopped = docker ps -a --filter "name=devassist-redis" --format "{{.Names}}" 2>$null
-    if ($redisStopped -eq "devassist-redis") {
-        Write-Host "  Starting existing Redis container..." -ForegroundColor Yellow
-        docker start devassist-redis | Out-Null
-    } else {
-        Write-Host "  Starting new Redis container..." -ForegroundColor Yellow
-        docker run -d --name devassist-redis -p 6379:6379 redis:alpine | Out-Null
-    }
-    Start-Sleep -Seconds 2
-    Write-Host "  OK: Redis started on port 6379" -ForegroundColor Green
+    Write-Host "  Skipping Docker Redis start (assuming Redis is running natively or in WSL)..." -ForegroundColor Yellow
 }
 
 # -------------------------------------------

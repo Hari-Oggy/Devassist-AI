@@ -14,7 +14,7 @@ class OpenAIProvider(BaseProvider):
 
     def generate(self, request: LLMRequest) -> LLMResponse:
         settings = get_settings()
-        model = settings.LLM_MODEL or request.metadata.get("model") 
+        model = request.metadata.get("model") or settings.LLM_MODEL
         temperature = request.temperature if request.temperature is not None else settings.LLM_TEMPERATURE
         max_tokens = request.max_tokens or settings.LLM_MAX_TOKENS
 

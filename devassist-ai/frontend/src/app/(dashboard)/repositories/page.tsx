@@ -1,104 +1,211 @@
 "use client";
-import { useEffect, useState } from "react";
-import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Layers, Plus, ExternalLink, Settings, GitBranch, Code2 } from "lucide-react";
-import { readJson } from "@/lib/api";
 
-interface Repository {
-  id: number;
-  provider: string;
-  full_name: string;
-  default_branch: string;
-  is_active: boolean;
-  created_at: string;
+import { useEffect, useState } from "react";
+import {
+  GitBranch,
+  Plus,
+  ExternalLink,
+  Settings,
+  Code2,
+  Layers,
+  ShieldAlert,
+  CheckCircle2,
+  X,
+  AlertCircle,
+} from "lucide-react";
+import { LineChart, Line, ResponsiveContainer, Tooltip } from "recharts";
+import { useDashboardStore, Repository } from "@/lib/stores/dashboardStore";
+import { PageHeader, GlassCard, LoadingSpinner, StatusBadge } from "@/components/ui/shared";
+
+// Sparkline for each repo card
+function Sparkline({ color = "#a855f7" }: { color?: string }) {
+  const data = Array.from({ length: 8 }, (_, i) => ({
+    v: Math.floor(Math.random() * 60 + 20),
+  }));
+  return (
+    <ResponsiveContainer width={100} height={36}>
+      <LineChart data={data}>
+        <Line type="monotone" dataKey="v" stroke={color} strokeWidth={2} dot={false} />
+        <Tooltip
+          contentStyle={{ display: "none" }}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+interface ModalProps {
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+}
+
+function Modal({ title, children, onClose }: ModalProps) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-200">
+      <div className="relative w-full max-w-md bg-[#13131f] border border-white/[0.08] rounded-2xl p-6 shadow-2xl">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-[17px] font-bold text-white">{title}</h2>
+          <button
+            onClick={onClose}
+            className="p-2 rounded-xl text-white/40 hover:text-white hover:bg-white/[0.06] transition-colors"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function RepoCard({
+  repo,
+  onDelete,
+}: {
+  repo: Repository;
+  onDelete: (id: number, name: string) => void;
+}) {
+  const reviewsCount = repo.reviewsCount ?? repo.reviews_count ?? 0;
+  const openIssues = repo.openIssues ?? repo.open_issues ?? 0;
+  const successRate = repo.successRate ?? repo.success_rate ?? 100;
+
+  return (
+    <GlassCard className="hover:border-violet-500/20 transition-all duration-300 group metric-card">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+        {/* Left: repo info */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-3 mb-2 flex-wrap">
+            <div className="flex items-center gap-2 p-2 rounded-xl bg-white/[0.04] border border-white/[0.06]">
+              {repo.provider === "github" ? (
+                <GitBranch className="h-4 w-4 text-white/60" />
+              ) : (
+                <Code2 className="h-4 w-4 text-white/60" />
+              )}
+            </div>
+            <h3 className="text-[15px] font-bold text-white group-hover:text-violet-300 transition-colors truncate">
+              {repo.full_name}
+            </h3>
+            {repo.is_active && (
+              <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[11px] font-bold text-emerald-400">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Active
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-4 text-[12px] text-white/30 mb-5">
+            <span className="flex items-center gap-1">
+              <GitBranch className="h-3 w-3" />
+              {repo.default_branch}
+            </span>
+            <span>·</span>
+            <span>
+              {repo.provider.charAt(0).toUpperCase() + repo.provider.slice(1)}
+            </span>
+            <span>·</span>
+            <span>
+              {new Date(repo.created_at).toLocaleDateString("en-GB", {
+                day: "numeric",
+                month: "short",
+                year: "numeric",
+              })}
+            </span>
+          </div>
+
+          {/* Stats */}
+          <div className="flex items-center gap-8">
+            <div>
+              <p className="text-[20px] font-bold text-white leading-none">{reviewsCount}</p>
+              <p className="text-[10px] text-white/35 uppercase tracking-wider font-medium mt-1">
+                Reviews
+              </p>
+            </div>
+            <div>
+              <p className={`text-[20px] font-bold leading-none ${openIssues > 0 ? "text-amber-400" : "text-white"}`}>
+                {openIssues}
+              </p>
+              <p className="text-[10px] text-white/35 uppercase tracking-wider font-medium mt-1">
+                Open Issues
+              </p>
+            </div>
+            <div>
+              <p className="text-[20px] font-bold text-white leading-none">{successRate}%</p>
+              <p className="text-[10px] text-white/35 uppercase tracking-wider font-medium mt-1">
+                Success Rate
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Right: sparkline + actions */}
+        <div className="flex items-center gap-4 shrink-0">
+          <div className="opacity-60 hidden md:block">
+            <Sparkline color={openIssues > 0 ? "#f97316" : "#a855f7"} />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onDelete(repo.id, repo.full_name)}
+              className="p-2 rounded-xl text-white/30 hover:text-rose-400 hover:bg-rose-500/10 transition-all duration-200"
+              title="Deactivate"
+            >
+              <Settings className="h-4 w-4" />
+            </button>
+            <a
+              href={`https://${repo.provider}.com/${repo.full_name}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <button className="p-2 rounded-xl text-white/30 hover:text-white hover:bg-white/[0.06] transition-all duration-200">
+                <ExternalLink className="h-4 w-4" />
+              </button>
+            </a>
+          </div>
+        </div>
+      </div>
+    </GlassCard>
+  );
 }
 
 export default function RepositoriesPage() {
-  const [repos, setRepos] = useState<Repository[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { repositories, loadingRepositories, fetchRepositories, addRepository, removeRepository } =
+    useDashboardStore();
 
-  // Modal & form states
   const [isOpen, setIsOpen] = useState(false);
   const [fullName, setFullName] = useState("");
   const [defaultBranch, setDefaultBranch] = useState("main");
   const [provider, setProvider] = useState<"github" | "gitlab">("github");
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
-
-  // Deactivate modal states
   const [deleteRepoId, setDeleteRepoId] = useState<number | null>(null);
-  const [deleteRepoName, setDeleteRepoName] = useState<string>("");
+  const [deleteRepoName, setDeleteRepoName] = useState("");
   const [deleting, setDeleting] = useState(false);
 
-  const getErrorMessage = (err: unknown, fallback: string) => {
-    return err instanceof Error ? err.message : fallback;
-  };
-
-  const fetchRepos = (showLoading = true) => {
-    if (showLoading) {
-      setLoading(true);
-    }
-
-    fetch("/api/v3/repositories")
-      .then(res => readJson<Repository[]>(res))
-      .then(data => {
-        setRepos(Array.isArray(data) ? data : []);
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error(err);
-        setLoading(false);
-      });
-  };
-
   useEffect(() => {
-    fetch("/api/v3/repositories")
-      .then(res => readJson<Repository[]>(res))
-      .then(data => {
-        setRepos(Array.isArray(data) ? data : []);
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error(err);
-        setLoading(false);
-      });
-  }, []);
+    fetchRepositories();
+  }, [fetchRepositories]);
 
   useEffect(() => {
     if (toast) {
-      const timer = setTimeout(() => setToast(null), 5000);
-      return () => clearTimeout(timer);
+      const t = setTimeout(() => setToast(null), 4000);
+      return () => clearTimeout(t);
     }
   }, [toast]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
-    setError(null);
+    setFormError(null);
     try {
-      const response = await fetch("/api/v3/repositories", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          provider,
-          full_name: fullName,
-          default_branch: defaultBranch,
-        }),
-      });
-
-      await readJson<unknown>(response);
-
-      setToast({ type: "success", message: `Successfully connected ${fullName}!` });
+      await addRepository({ provider, full_name: fullName, default_branch: defaultBranch });
+      setToast({ type: "success", message: `Connected ${fullName} successfully!` });
       setIsOpen(false);
       setFullName("");
       setDefaultBranch("main");
-      fetchRepos();
-    } catch (err: unknown) {
-      setError(getErrorMessage(err, "An unexpected error occurred"));
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "An unexpected error occurred");
     } finally {
       setSubmitting(false);
     }
@@ -108,254 +215,212 @@ export default function RepositoriesPage() {
     if (deleteRepoId === null) return;
     setDeleting(true);
     try {
-      const response = await fetch(`/api/v3/repositories/${deleteRepoId}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to deactivate repository");
-      }
-
-      setToast({ type: "success", message: `Successfully deactivated ${deleteRepoName}!` });
+      await removeRepository(deleteRepoId);
+      setToast({ type: "success", message: `Deactivated ${deleteRepoName}!` });
       setDeleteRepoId(null);
       setDeleteRepoName("");
-      fetchRepos();
-    } catch (err: unknown) {
-      setToast({ type: "error", message: getErrorMessage(err, "An unexpected error occurred") });
+    } catch (err) {
+      setToast({ type: "error", message: err instanceof Error ? err.message : "Failed to deactivate" });
     } finally {
       setDeleting(false);
     }
   };
 
-  return (
-    <div className="mx-auto max-w-5xl p-8 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex items-center justify-between border-b border-zinc-800 pb-6">
-        <div>
-          <h1 className="text-3xl font-bold text-white tracking-tight">Repositories</h1>
-          <p className="text-zinc-400 mt-1">Manage repositories connected to DevAssist-AI.</p>
-        </div>
-        <Button 
-          onClick={() => setIsOpen(true)}
-          className="bg-orange-600 hover:bg-orange-700 text-white shadow-lg shadow-orange-900/20"
-        >
-          <Plus className="mr-2 h-4 w-4" />
-          Add Repository
-        </Button>
-      </div>
+  const inputCls =
+    "w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-3 text-[13px] text-white placeholder:text-white/25 focus:outline-none focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/30 transition-all duration-200";
 
-      {loading ? (
-        <div className="flex items-center justify-center h-48">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500"></div>
-        </div>
-      ) : repos.length === 0 ? (
-        <Card className="bg-zinc-900/30 border-zinc-800/60 p-12 flex flex-col items-center justify-center text-center">
-          <div className="h-16 w-16 rounded-full bg-zinc-800/50 flex items-center justify-center mb-6">
-            <Layers className="h-8 w-8 text-zinc-500" />
-          </div>
-          <h3 className="text-xl font-semibold text-white mb-2">No repositories connected</h3>
-          <p className="text-zinc-400 max-w-md mb-8">
-            Connect your GitHub or GitLab repositories to start getting automated PR reviews.
-          </p>
-          <Button 
-            onClick={() => { setProvider("github"); setIsOpen(true); }}
-            className="bg-zinc-100 text-zinc-900 hover:bg-white"
+  return (
+    <div className="mx-auto max-w-[1280px] p-8 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <PageHeader
+        title="Repositories"
+        subtitle="Manage and monitor your connected code repositories."
+        action={
+          <button
+            onClick={() => setIsOpen(true)}
+            className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 px-5 py-2.5 text-[13px] font-bold text-white transition-all duration-200 shadow-lg shadow-violet-600/25"
           >
-            <GitBranch className="mr-2 h-4 w-4" />
+            <Plus className="h-4 w-4" />
+            Add Repository
+          </button>
+        }
+      />
+
+      {loadingRepositories ? (
+        <div className="flex items-center justify-center h-48">
+          <LoadingSpinner />
+        </div>
+      ) : repositories.length === 0 ? (
+        <GlassCard className="flex flex-col items-center justify-center py-20 text-center">
+          <div className="h-20 w-20 rounded-3xl bg-white/[0.04] border border-white/[0.07] flex items-center justify-center mb-6">
+            <Layers className="h-10 w-10 text-white/20" />
+          </div>
+          <h3 className="text-[20px] font-bold text-white mb-2">No repositories connected</h3>
+          <p className="text-white/40 max-w-sm mb-8 text-[14px] leading-relaxed">
+            Connect your GitHub or GitLab repositories to start getting automated AI-powered PR reviews.
+          </p>
+          <button
+            onClick={() => { setProvider("github"); setIsOpen(true); }}
+            className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 px-6 py-3 text-[13px] font-bold text-white transition-all duration-200 shadow-lg shadow-violet-600/25"
+          >
+            <GitBranch className="h-4 w-4" />
             Connect GitHub
-          </Button>
-        </Card>
+          </button>
+        </GlassCard>
       ) : (
-        <div className="grid gap-4">
-          {repos.map((repo) => (
-            <Card key={repo.id} className="bg-zinc-900/50 border-zinc-800 p-6 flex items-center justify-between hover:border-zinc-700 transition-colors group">
-              <div className="flex items-center gap-4">
-                <div className="p-3 bg-zinc-800/80 rounded-xl text-zinc-300">
-                  {repo.provider === "github" ? <GitBranch className="h-6 w-6" /> : <Code2 className="h-6 w-6" />}
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-                    {repo.full_name}
-                    {repo.is_active && (
-                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] font-medium text-emerald-400 uppercase tracking-wider">
-                        Active
-                      </span>
-                    )}
-                  </h3>
-                  <div className="flex items-center gap-4 mt-1 text-sm text-zinc-500">
-                    <span className="flex items-center gap-1">
-                      <GitBranch className="h-3.5 w-3.5" />
-                      {repo.default_branch}
-                    </span>
-                    <span>Added {new Date(repo.created_at).toLocaleDateString()}</span>
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                <Button
-                  onClick={() => {
-                    setDeleteRepoId(repo.id);
-                    setDeleteRepoName(repo.full_name);
-                  }}
-                  variant="ghost"
-                  size="icon"
-                  className="text-zinc-400 hover:text-white hover:bg-zinc-800"
-                >
-                  <Settings className="h-4 w-4" />
-                </Button>
-                <a href={`https://${repo.provider}.com/${repo.full_name}`} target="_blank" rel="noreferrer">
-                  <Button variant="ghost" size="icon" className="text-zinc-400 hover:text-white hover:bg-zinc-800">
-                    <ExternalLink className="h-4 w-4" />
-                  </Button>
-                </a>
-              </div>
-            </Card>
+        <div className="grid gap-5">
+          {repositories.map((repo) => (
+            <RepoCard
+              key={repo.id}
+              repo={repo}
+              onDelete={(id, name) => { setDeleteRepoId(id); setDeleteRepoName(name); }}
+            />
           ))}
         </div>
       )}
 
-      {/* Connect Repository Modal Overlay */}
+      {/* Add Repository Modal */}
       {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="relative w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-xl p-6 shadow-2xl space-y-4 text-white">
-            <h2 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-              <GitBranch className="h-5 w-5 text-orange-500" />
-              Connect Repository
-            </h2>
-            <p className="text-zinc-400 text-sm">
-              Enter details below to monitor and review pull requests.
-            </p>
+        <Modal title="Connect Repository" onClose={() => { setIsOpen(false); setFormError(null); }}>
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {formError && (
+              <div className="flex items-center gap-2 p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-[13px] text-rose-400 font-medium">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                {formError}
+              </div>
+            )}
 
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {error && (
-                <div className="p-3 bg-red-950/40 border border-red-500/30 rounded-lg text-sm text-red-400">
-                  {error}
-                </div>
-              )}
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Provider</label>
-                <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-2">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-white/40">
+                Provider
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                {(["github", "gitlab"] as const).map((p) => (
                   <button
+                    key={p}
                     type="button"
-                    onClick={() => setProvider("github")}
-                    className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg border text-sm font-medium transition-colors ${
-                      provider === "github"
-                        ? "bg-zinc-800 border-orange-500/50 text-white"
-                        : "bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:text-white"
+                    onClick={() => setProvider(p)}
+                    className={`flex items-center justify-center gap-2 py-3 px-3 rounded-xl border text-[13px] font-semibold transition-all duration-200 ${
+                      provider === p
+                        ? "bg-violet-600/15 border-violet-500/40 text-violet-300"
+                        : "bg-white/[0.03] border-white/[0.07] text-white/50 hover:text-white/70 hover:bg-white/[0.05]"
                     }`}
                   >
-                    <GitBranch className="h-4 w-4" />
-                    GitHub
+                    {p === "github" ? <GitBranch className="h-4 w-4" /> : <Code2 className="h-4 w-4" />}
+                    {p.charAt(0).toUpperCase() + p.slice(1)}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setProvider("gitlab")}
-                    className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg border text-sm font-medium transition-colors ${
-                      provider === "gitlab"
-                        ? "bg-zinc-800 border-orange-500/50 text-white"
-                        : "bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:text-white"
-                    }`}
-                  >
-                    <Code2 className="h-4 w-4" />
-                    GitLab
-                  </button>
-                </div>
+                ))}
               </div>
+            </div>
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Repository Name</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. owner/repo"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-orange-500 transition-colors"
-                />
-              </div>
+            <div className="space-y-2">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-white/40">
+                Repository Name
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. owner/repo"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                className={inputCls}
+              />
+            </div>
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Default Branch</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. main"
-                  value={defaultBranch}
-                  onChange={(e) => setDefaultBranch(e.target.value)}
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-orange-500 transition-colors"
-                />
-              </div>
-
-              <div className="flex justify-end gap-3 pt-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => {
-                    setIsOpen(false);
-                    setError(null);
-                  }}
-                  disabled={submitting}
-                  className="text-zinc-400 hover:text-white hover:bg-zinc-800"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={submitting}
-                  className="bg-orange-600 hover:bg-orange-700 text-white shadow-lg"
-                >
-                  {submitting ? "Validating & Connecting..." : "Connect"}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Delete Confirmation Modal */}
-      {deleteRepoId !== null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="relative w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-xl p-6 shadow-2xl space-y-4 text-white">
-            <h2 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-              Deactivate Repository
-            </h2>
-            <p className="text-zinc-400 text-sm">
-              Are you sure you want to deactivate <span className="font-semibold text-white">{deleteRepoName}</span>? It will no longer receive automated code reviews.
-            </p>
+            <div className="space-y-2">
+              <label className="text-[11px] font-semibold uppercase tracking-wider text-white/40">
+                Default Branch
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. main"
+                value={defaultBranch}
+                onChange={(e) => setDefaultBranch(e.target.value)}
+                className={inputCls}
+              />
+            </div>
 
             <div className="flex justify-end gap-3 pt-2">
-              <Button
+              <button
                 type="button"
-                variant="ghost"
-                onClick={() => {
-                  setDeleteRepoId(null);
-                  setDeleteRepoName("");
-                }}
-                disabled={deleting}
-                className="text-zinc-400 hover:text-white hover:bg-zinc-800"
+                onClick={() => { setIsOpen(false); setFormError(null); }}
+                disabled={submitting}
+                className="px-4 py-2.5 rounded-xl text-[13px] font-semibold text-white/50 hover:text-white/70 hover:bg-white/[0.05] transition-all duration-200"
               >
                 Cancel
-              </Button>
-              <Button
-                onClick={handleDelete}
-                disabled={deleting}
-                className="bg-red-600 hover:bg-red-700 text-white shadow-lg"
+              </button>
+              <button
+                type="submit"
+                disabled={submitting}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-[13px] font-bold text-white transition-all duration-200 shadow-lg shadow-violet-600/20 disabled:opacity-60"
               >
-                {deleting ? "Deactivating..." : "Deactivate"}
-              </Button>
+                {submitting ? (
+                  <>
+                    <LoadingSpinner size="sm" /> Connecting...
+                  </>
+                ) : (
+                  "Connect Repository"
+                )}
+              </button>
             </div>
-          </div>
-        </div>
+          </form>
+        </Modal>
       )}
 
-      {/* Toast Notification */}
+      {/* Deactivate Confirmation Modal */}
+      {deleteRepoId !== null && (
+        <Modal title="Deactivate Repository" onClose={() => { setDeleteRepoId(null); setDeleteRepoName(""); }}>
+          <div className="flex items-start gap-4 mb-6">
+            <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 shrink-0">
+              <ShieldAlert className="h-6 w-6 text-rose-400" />
+            </div>
+            <div>
+              <p className="text-[14px] text-white/70 leading-relaxed">
+                Are you sure you want to deactivate{" "}
+                <span className="font-bold text-white">{deleteRepoName}</span>? It will no longer receive automated code reviews.
+              </p>
+            </div>
+          </div>
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={() => { setDeleteRepoId(null); setDeleteRepoName(""); }}
+              disabled={deleting}
+              className="px-4 py-2.5 rounded-xl text-[13px] font-semibold text-white/50 hover:text-white/70 hover:bg-white/[0.05] transition-all duration-200"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-[13px] font-bold text-white transition-all duration-200 shadow-lg shadow-rose-500/20 disabled:opacity-60"
+            >
+              {deleting ? (
+                <>
+                  <LoadingSpinner size="sm" /> Deactivating...
+                </>
+              ) : (
+                "Deactivate"
+              )}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Toast */}
       {toast && (
-        <div className={`fixed bottom-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-lg border shadow-xl animate-in slide-in-from-bottom-2 duration-300 ${
-          toast.type === "success" 
-            ? "bg-emerald-950/90 border-emerald-500/30 text-emerald-400" 
-            : "bg-red-950/90 border-red-500/30 text-red-400"
-        }`}>
-          <span>{toast.message}</span>
+        <div
+          className={`fixed bottom-6 right-6 z-50 flex items-center gap-3 px-5 py-3.5 rounded-2xl border shadow-2xl animate-in slide-in-from-bottom-4 duration-300 backdrop-blur-md ${
+            toast.type === "success"
+              ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400"
+              : "bg-rose-500/10 border-rose-500/25 text-rose-400"
+          }`}
+        >
+          {toast.type === "success" ? (
+            <CheckCircle2 className="h-5 w-5 shrink-0" />
+          ) : (
+            <AlertCircle className="h-5 w-5 shrink-0" />
+          )}
+          <span className="text-[13px] font-semibold">{toast.message}</span>
         </div>
       )}
     </div>

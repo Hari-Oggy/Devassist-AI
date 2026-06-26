@@ -68,6 +68,14 @@ class RAGSettings(BaseSettings):
         default=60,
         description="Reciprocal Rank Fusion constant k (higher = smoother ranking)",
     )
+    RAG_RERANK_ENABLED: bool = Field(
+        default=False,
+        description="Enable cross-encoder reranking after RRF fusion (improves precision, adds latency)",
+    )
+    RAG_RERANK_MODEL: str = Field(
+        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        description="Cross-encoder model for reranking",
+    )
 
     # ── Storage ──────────────────────────────────────────────────────────
     RAG_INDEX_DIR: str = Field(

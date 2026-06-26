@@ -30,6 +30,9 @@ class RepositoryResponse(BaseModel):
     full_name: str
     is_active: bool
     created_at: str
+    reviews_count: int = 0
+    open_issues: int = 0
+    success_rate: int = 100
 
     class Config:
         from_attributes = True
@@ -41,22 +44,65 @@ async def list_repositories(
     active_only: bool = Query(True, description="Only return active repos"),
     session: AsyncSession = Depends(get_db_session)
 ):
+    from sqlalchemy import select, func
+    from models.entities import Review, PullRequest, Finding, ReviewStatus
+
     if active_only:
         repos = await RepositoryRepo.get_all_active(session)
     else:
         # TODO: Implement get_all() if needed, for now just returning active
         repos = await RepositoryRepo.get_all_active(session)
     
-    # We map datetime manually for simplicity in the response
-    return [
-        {
+    results = []
+    for r in repos:
+        # Count total reviews
+        total_stmt = (
+            select(func.count(Review.id))
+            .join(PullRequest, Review.pull_request_id == PullRequest.id)
+            .where(PullRequest.repository_id == r.id)
+        )
+        total_res = await session.execute(total_stmt)
+        reviews_count = total_res.scalar_one_or_none() or 0
+
+        # Count completed reviews
+        completed_stmt = (
+            select(func.count(Review.id))
+            .join(PullRequest, Review.pull_request_id == PullRequest.id)
+            .where(PullRequest.repository_id == r.id, Review.status == ReviewStatus.COMPLETED)
+        )
+        completed_res = await session.execute(completed_stmt)
+        completed_reviews = completed_res.scalar_one_or_none() or 0
+
+        # Success rate
+        success_rate = 100
+        if reviews_count > 0:
+            success_rate = int(round((completed_reviews / reviews_count) * 100))
+
+        # Count open issues (open/unsuppressed findings on completed reviews)
+        open_issues_stmt = (
+            select(func.count(Finding.id))
+            .join(Review, Finding.review_id == Review.id)
+            .join(PullRequest, Review.pull_request_id == PullRequest.id)
+            .where(
+                PullRequest.repository_id == r.id,
+                Review.status == ReviewStatus.COMPLETED,
+                Finding.is_suppressed == False
+            )
+        )
+        open_issues_res = await session.execute(open_issues_stmt)
+        open_issues = open_issues_res.scalar_one_or_none() or 0
+
+        results.append({
             "id": r.id,
             "provider": r.provider,
             "full_name": r.full_name,
             "is_active": r.is_active,
-            "created_at": r.created_at.isoformat()
-        } for r in repos
-    ]
+            "created_at": r.created_at.isoformat(),
+            "reviews_count": reviews_count,
+            "open_issues": open_issues,
+            "success_rate": success_rate
+        })
+    return results
 
 @router.post("", response_model=RepositoryResponse)
 async def create_repository(
@@ -109,7 +155,10 @@ async def create_repository(
         "provider": db_repo.provider,
         "full_name": db_repo.full_name,
         "is_active": db_repo.is_active,
-        "created_at": db_repo.created_at.isoformat()
+        "created_at": db_repo.created_at.isoformat(),
+        "reviews_count": 0,
+        "open_issues": 0,
+        "success_rate": 100
     }
 
 @router.delete("/{repo_id}")

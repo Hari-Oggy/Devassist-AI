@@ -82,6 +82,22 @@ MODEL_REGISTRY: dict[str, dict] = {
         "supports_vision": False,
     },
 
+    # --- OpenRouter ---
+    "moonshotai/moonshot-v1-8k": {
+        "provider": "openrouter",
+        "context_window": 8192,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": False,
+    },
+    "deepseek/deepseek-chat:free": {
+        "provider": "openrouter",
+        "context_window": 32768,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": False,
+    },
+
     # --- Local LLM (defaults, user can override model name) ---
     "qwen2.5-7b-instruct": {
         "provider": "local",
@@ -118,7 +134,7 @@ MODEL_REGISTRY: dict[str, dict] = {
 FALLBACK_CHAINS: dict[str, list[str]] = {
     "code_review": [
         "meta/llama-3.1-70b-instruct",
-        "qwen2.5-7b-instruct",
+        "openai/gpt-oss-120b",
         "gpt-4o",
         "claude-3-5-sonnet-20241022",
         "gemini-2.5-pro",
@@ -127,7 +143,7 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     ],
     "documentation": [
         "meta/llama-3.1-70b-instruct",
-        "qwen2.5-7b-instruct",
+        "openai/gpt-oss-120b",
         "claude-3-5-sonnet-20241022",
         "gpt-4o",
         "gemini-2.5-pro",
@@ -142,6 +158,22 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
         "gemini-2.0-flash",
         "llama3",
     ],
+    "context_distillation": [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gpt-4o-mini",
+        "claude-3-haiku-20240307",
+        "meta/llama-3.1-8b-instruct",
+        "qwen2.5-7b-instruct",
+    ],
+    "finding_validation": [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gpt-4o-mini",
+        "claude-3-haiku-20240307",
+        "meta/llama-3.1-8b-instruct",
+        "qwen2.5-7b-instruct",
+    ],
 }
 
 
@@ -150,17 +182,52 @@ def get_model_info(model_name: str) -> dict | None:
     if model_name in MODEL_REGISTRY:
         return MODEL_REGISTRY[model_name]
     
-    # Fallback for dynamic/unregistered models configured by the user
+    # Fallback for settings-configured and pipeline settings-configured models
     from core.config import get_settings
+    from core.pipeline_config import get_pipeline_settings
+    
     settings = get_settings()
-    if model_name == settings.LLM_MODEL:
+    pipe_settings = get_pipeline_settings()
+    
+    configured_models = []
+    if settings.LLM_MODEL:
+        configured_models.append(settings.LLM_MODEL)
+    if pipe_settings.DISTILL_MODEL:
+        configured_models.append(pipe_settings.DISTILL_MODEL)
+    if pipe_settings.REASON_MODEL:
+        configured_models.append(pipe_settings.REASON_MODEL)
+    if pipe_settings.VALIDATE_MODEL:
+        configured_models.append(pipe_settings.VALIDATE_MODEL)
+        
+    if model_name in configured_models:
+        provider = settings.LLM_PROVIDER
+        lower_name = model_name.lower()
+        valid_providers = ["openai", "gemini", "nvidia", "anthropic", "openrouter", "local"]
+        
+        # Check if the prefix contains a valid provider
+        import re
+        tokens = re.split(r'[/:\-_]', lower_name)
+        if tokens:
+            prefix = tokens[0]
+            for vp in valid_providers:
+                if vp == prefix or vp in prefix or prefix.startswith(vp):
+                    provider = vp
+                    break
+            # Additional fallback mappings for common provider names
+            if provider == settings.LLM_PROVIDER:
+                if "claude" in prefix:
+                    provider = "anthropic"
+                elif "gpt" in prefix:
+                    provider = "openai"
+                    
         return {
-            "provider": settings.LLM_PROVIDER,
+            "provider": provider,
             "context_window": 128000,
-            "supports_tools": False,
+            "supports_tools": True,
             "supports_json": True,
             "supports_vision": False,
         }
+        
     return None
 
 

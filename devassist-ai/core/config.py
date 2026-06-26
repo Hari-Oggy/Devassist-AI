@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = Field(default=None, description="OpenAI API Key")
     ANTHROPIC_API_KEY: Optional[str] = Field(default=None, description="Anthropic API Key")
     GEMINI_API_KEY: Optional[str] = Field(default=None, description="Google Gemini API Key")
+    OPENROUTER_API_KEY: Optional[str] = Field(default=None, description="OpenRouter API Key")
 
     # --- Local LLM Configuration ---
     LOCAL_API_BASE: str = Field(default="http://localhost:11434/v1", description="Base URL for local LLM (Ollama/vLLM/LM Studio)")

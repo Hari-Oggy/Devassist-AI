@@ -3,21 +3,29 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useUser } from "@clerk/nextjs";
-import { 
-  Search, 
-  Layers, 
-  LayoutDashboard, 
-  Settings, 
-  PieChart,
-  ListTodo
+import {
+  Search,
+  LayoutDashboard,
+  Settings,
+  BarChart3,
+  ListTodo,
+  GitBranch,
+  HelpCircle,
+  Zap,
+  ChevronRight,
 } from "lucide-react";
+import { ThemeToggle } from "./ThemeToggle";
 
 const navigation = [
-  { name: 'Overview', href: '/dashboard', icon: LayoutDashboard },
-  { name: 'Reviews', href: '/reviews', icon: ListTodo },
-  { name: 'Repositories', href: '/repositories', icon: Layers },
-  { name: 'Analytics', href: '/analytics', icon: PieChart },
-  { name: 'Settings', href: '/settings', icon: Settings },
+  { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+  { name: "Reviews", href: "/reviews", icon: ListTodo },
+  { name: "Repositories", href: "/repositories", icon: GitBranch },
+  { name: "Analytics", href: "/analytics", icon: BarChart3 },
+  { name: "Settings", href: "/settings", icon: Settings },
+];
+
+const bottomNav = [
+  { name: "Help & Docs", href: "#", icon: HelpCircle },
 ];
 
 export function Sidebar() {
@@ -25,69 +33,131 @@ export function Sidebar() {
   const { user, isLoaded } = useUser();
 
   return (
-    <div className="flex h-full w-64 flex-col border-r border-zinc-800 bg-[#0d0d12]">
-      <div className="flex h-16 items-center gap-2 px-6 border-b border-zinc-800/50">
-        <div className="h-6 w-6 rounded-md bg-gradient-to-tr from-orange-600 to-amber-500 overflow-hidden flex items-center justify-center shadow-lg shadow-orange-900/20">
-          <span className="font-bold text-[10px] text-white">DA</span>
+    <aside className="flex h-full w-[220px] shrink-0 flex-col bg-[#0d0d14] border-r border-white/[0.06]">
+      {/* Logo */}
+      <div className="flex h-16 items-center gap-3 px-5 border-b border-white/[0.06]">
+        <div className="relative h-8 w-8 rounded-xl bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-violet-600/30">
+          <Zap className="h-4 w-4 text-white" />
+          <div className="absolute inset-0 rounded-xl bg-gradient-to-br from-violet-400/20 to-transparent" />
         </div>
-        <span className="font-bold text-sm tracking-tight text-zinc-100">DevAssist-AI</span>
+        <div>
+          <span className="font-bold text-[14px] tracking-tight text-white leading-none block">
+            DevAssist
+          </span>
+          <span className="text-[10px] font-medium text-violet-400 tracking-widest uppercase leading-none">
+            AI
+          </span>
+        </div>
       </div>
-      
-      <div className="px-4 pt-4 pb-2">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-500" />
+
+      {/* Search */}
+      <div className="px-4 pt-5 pb-2">
+        <div className="relative group">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/30 group-focus-within:text-violet-400 transition-colors duration-200" />
           <input
             type="text"
             placeholder="Search..."
-            className="w-full rounded-md border border-zinc-800 bg-zinc-900/50 py-2 pl-9 pr-3 text-sm text-zinc-300 placeholder:text-zinc-600 focus:border-zinc-700 focus:outline-none focus:ring-1 focus:ring-zinc-700 transition-all"
+            className="w-full rounded-lg border border-white/[0.07] bg-white/[0.04] py-2 pl-8 pr-3 text-[13px] text-white/80 placeholder:text-white/25 focus:border-violet-500/40 focus:outline-none focus:ring-1 focus:ring-violet-500/30 transition-all duration-200"
           />
         </div>
       </div>
 
-      <nav className="flex-1 space-y-1 px-3 py-4 overflow-y-auto scrollbar-hide">
+      {/* Nav label */}
+      <div className="px-5 pt-4 pb-1">
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-white/25">
+          Navigation
+        </p>
+      </div>
+
+      {/* Navigation */}
+      <nav className="flex-1 space-y-0.5 px-3 py-2 overflow-y-auto">
         {navigation.map((item) => {
-          const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
+          const isActive =
+            pathname === item.href || pathname.startsWith(item.href + "/");
           return (
             <Link
               key={item.name}
               href={item.href}
-              className={`group flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-all duration-200 ${
-                isActive 
-                  ? "bg-zinc-800/80 text-white shadow-sm" 
-                  : "text-zinc-400 hover:bg-zinc-800/40 hover:text-white"
+              className={`group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] font-medium transition-all duration-200 ${
+                isActive
+                  ? "bg-violet-600/15 text-white sidebar-active"
+                  : "text-white/50 hover:bg-white/[0.04] hover:text-white/80"
               }`}
             >
-              <item.icon className={`h-4 w-4 shrink-0 transition-colors ${isActive ? "text-orange-500" : "text-zinc-500 group-hover:text-zinc-300"}`} aria-hidden="true" />
-              {item.name}
+              <item.icon
+                className={`h-4 w-4 shrink-0 transition-colors duration-200 ${
+                  isActive
+                    ? "text-violet-400"
+                    : "text-white/35 group-hover:text-white/60"
+                }`}
+                aria-hidden="true"
+              />
+              <span className="flex-1">{item.name}</span>
+              {isActive && (
+                <ChevronRight className="h-3.5 w-3.5 text-violet-400/60 shrink-0" />
+              )}
             </Link>
           );
         })}
       </nav>
 
-      <div className="mt-auto p-4">
-        <div className="rounded-xl border border-zinc-800/50 bg-gradient-to-b from-zinc-800/40 to-zinc-900/40 p-4 shadow-sm backdrop-blur-sm">
-          <p className="text-xs font-semibold text-white">
-            <span className="text-orange-500">DevAssist-AI</span> Pro
-          </p>
-          <p className="mt-1 text-[11px] text-zinc-400 leading-snug">
-            You are using the ensemble review pipeline.
-          </p>
+      {/* Bottom nav */}
+      <div className="px-3 pb-2 space-y-0.5">
+        {bottomNav.map((item) => (
+          <Link
+            key={item.name}
+            href={item.href}
+            className="group flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] font-medium text-white/35 hover:bg-white/[0.04] hover:text-white/70 transition-all duration-200"
+          >
+            <item.icon className="h-4 w-4 shrink-0 text-white/25 group-hover:text-white/50 transition-colors" />
+            {item.name}
+          </Link>
+        ))}
+      </div>
+
+      {/* Upgrade card */}
+      <div className="p-3">
+        <div className="relative rounded-2xl overflow-hidden p-[1px] bg-gradient-to-br from-violet-600/50 via-indigo-600/30 to-cyan-600/20">
+          <div className="absolute inset-0 bg-gradient-to-br from-violet-600/10 to-indigo-900/30" />
+          <div className="relative rounded-2xl bg-[#0d0d14]/80 backdrop-blur-xl p-4 flex flex-col gap-2.5">
+            <div className="h-8 w-8 rounded-lg bg-violet-600/20 border border-violet-500/20 flex items-center justify-center">
+              <Zap className="h-4 w-4 text-violet-400" />
+            </div>
+            <div>
+              <p className="text-[13px] font-bold text-white">Upgrade to Pro</p>
+              <p className="mt-0.5 text-[11px] text-white/40 leading-relaxed">
+                Unlock advanced insights & priority support.
+              </p>
+            </div>
+            <button className="w-full rounded-lg bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 px-3 py-2 text-[11px] font-bold text-white transition-all duration-200 shadow-lg shadow-violet-600/20">
+              Upgrade Now →
+            </button>
+          </div>
         </div>
       </div>
-      
-      <div className="border-t border-zinc-800/80 p-4 bg-zinc-900/20">
-        <div className="flex items-center gap-3">
-          <div className="flex-shrink-0">
-            <UserButton />
+
+      {/* User profile */}
+      <div className="border-t border-white/[0.06] p-4 bg-white/[0.01]">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="flex-shrink-0 relative">
+              <UserButton
+                appearance={{ elements: { avatarBox: "h-8 w-8 rounded-lg" } }}
+              />
+              <div className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 border-2 border-[#0d0d14] pulse-live" />
+            </div>
+            <div className="flex flex-col min-w-0">
+              <span className="text-[13px] font-semibold text-white truncate">
+                {isLoaded && user ? user.fullName || user.username : "Loading..."}
+              </span>
+              <span className="text-[10px] font-medium text-violet-400/70 uppercase tracking-wider">
+                Admin
+              </span>
+            </div>
           </div>
-          <div className="flex flex-col min-w-0">
-            <span className="text-sm font-medium text-zinc-200 truncate">
-              {isLoaded && user ? user.fullName || user.username : "Loading..."}
-            </span>
-            <span className="text-[10px] text-zinc-500">Admin</span>
-          </div>
+          <ThemeToggle />
         </div>
       </div>
-    </div>
+    </aside>
   );
 }

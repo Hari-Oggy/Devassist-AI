@@ -87,13 +87,34 @@ class PipelineSettings(BaseSettings):
     }
 
 
-# Singleton instance
-_pipeline_settings: Optional[PipelineSettings] = None
+# Singleton# --- Runtime Overrides ---
+_mode_override: str | None = None
+
+def set_review_mode_override(mode: str | None):
+    """Override the REVIEW_MODE at runtime."""
+    global _mode_override
+    _mode_override = mode
+
+
+# Singleton
+_pipeline_settings: PipelineSettings | None = None
 
 
 def get_pipeline_settings() -> PipelineSettings:
-    """Returns a singleton PipelineSettings instance."""
+    """Return a singleton PipelineSettings instance.
+    
+    If _mode_override is set, it injects it into the settings returned.
+    """
     global _pipeline_settings
     if _pipeline_settings is None:
         _pipeline_settings = PipelineSettings()
+        
+    # Return a copy with the override applied, or just mutate the singleton
+    if _mode_override:
+        _pipeline_settings.REVIEW_MODE = _mode_override
+        
     return _pipeline_settings
+
+
+
+

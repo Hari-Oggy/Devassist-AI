@@ -152,7 +152,9 @@ def test_api_repository_clone_url_construction_github_no_token(mock_db):
          patch("codegraph.repo_cloner.RepoCloner") as MockCloner, \
          patch("models.repositories.RepositoryRepo.upsert") as mock_upsert:
         
-        mock_upsert.return_value = MagicMock(id=1, provider=ProviderType.GITHUB, full_name="user/repo", is_active=True)
+        mock_repo = MagicMock(id=1, provider=ProviderType.GITHUB, full_name="user/repo", is_active=True)
+        mock_repo.created_at.isoformat.return_value = "2026-06-25T12:00:00"
+        mock_upsert.return_value = mock_repo
         
         app.dependency_overrides[get_db_session] = lambda: mock_db
         client = TestClient(app)
@@ -178,7 +180,9 @@ def test_api_repository_clone_url_construction_github_with_token(mock_db):
          patch("codegraph.repo_cloner.RepoCloner") as MockCloner, \
          patch("models.repositories.RepositoryRepo.upsert") as mock_upsert:
         
-        mock_upsert.return_value = MagicMock(id=2, provider=ProviderType.GITHUB, full_name="user/repo", is_active=True)
+        mock_repo = MagicMock(id=2, provider=ProviderType.GITHUB, full_name="user/repo", is_active=True)
+        mock_repo.created_at.isoformat.return_value = "2026-06-25T12:00:00"
+        mock_upsert.return_value = mock_repo
         
         app.dependency_overrides[get_db_session] = lambda: mock_db
         client = TestClient(app)
@@ -198,14 +202,16 @@ def test_api_repository_clone_url_construction_gitlab_with_token(mock_db):
     """Verify GITLAB repository clone endpoint URL construction with custom host and token."""
     from core.config import Settings
     custom_settings = Settings()
-    custom_settings.GITLAB_TOKEN = "glpat-mocktoken"
-    custom_settings.GITLAB_API_URL = "https://gitlab.custom.domain/api/v4"
+    object.__setattr__(custom_settings, "GITLAB_TOKEN", "glpat-mocktoken")
+    object.__setattr__(custom_settings, "GITLAB_API_URL", "https://gitlab.custom.domain/api/v4")
     
     with patch("core.config.get_settings", return_value=custom_settings), \
          patch("codegraph.repo_cloner.RepoCloner") as MockCloner, \
          patch("models.repositories.RepositoryRepo.upsert") as mock_upsert:
         
-        mock_upsert.return_value = MagicMock(id=3, provider=ProviderType.GITLAB, full_name="group/subgroup/project", is_active=True)
+        mock_repo = MagicMock(id=3, provider=ProviderType.GITLAB, full_name="group/subgroup/project", is_active=True)
+        mock_repo.created_at.isoformat.return_value = "2026-06-25T12:00:00"
+        mock_upsert.return_value = mock_repo
         
         app.dependency_overrides[get_db_session] = lambda: mock_db
         client = TestClient(app)

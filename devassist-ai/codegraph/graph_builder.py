@@ -27,7 +27,7 @@ from codegraph.models import Symbol, Dependency
 if TYPE_CHECKING:
     # Avoid a hard dependency on the parser layer at import time so that
     # CodeGraph itself can be used without the full parser stack installed.
-    from codegraph.parsers.factory import ParserFactory  # type: ignore[import]
+    from codegraph.parsers import ParserFactory  # type: ignore[import]
 
 logger = get_logger("codegraph.graph_builder")
 
@@ -216,7 +216,7 @@ class CodeGraphBuilder:
             ImportError: When the parsers sub-package is not available.
         """
         if self._parser_factory is None:
-            from codegraph.parsers.factory import ParserFactory  # type: ignore[import]
+            from codegraph.parsers import ParserFactory  # type: ignore[import]
             self._parser_factory = ParserFactory()
         return self._parser_factory
 

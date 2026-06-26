@@ -29,4 +29,6 @@ dependencies = [
     "sentence-transformers>=2.2.0",
     "asyncpg>=0.31.0",
     "psycopg2-binary>=2.9.12",
+    "langchain-text-splitters>=0.0.2",
+    "rank-bm25>=0.2.2",
 ]

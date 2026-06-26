@@ -57,6 +57,7 @@ async def get_all_reviews(
             "pr_number": r.pull_request.provider_pr_id if r.pull_request else None,
             "repo_name": r.pull_request.repository.full_name if r.pull_request and r.pull_request.repository else None,
             "provider": r.pull_request.repository.provider if r.pull_request and r.pull_request.repository else None,
+            "total_findings": r.total_findings,
         } for r in reviews
     ]
 
@@ -90,6 +91,7 @@ async def get_review_by_id(
         "pr_number": r.pull_request.provider_pr_id if r.pull_request else None,
         "repo_name": r.pull_request.repository.full_name if r.pull_request and r.pull_request.repository else None,
         "provider": r.pull_request.repository.provider if r.pull_request and r.pull_request.repository else None,
+        "total_findings": r.total_findings,
     }
 
 @router.get("/{review_id}/findings", response_model=List[FindingResponse])

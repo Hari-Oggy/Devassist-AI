@@ -5,13 +5,15 @@ from llm.schemas import LLMRequest, LLMResponse
 from core.config import get_settings
 
 
-class NvidiaProvider(BaseProvider):
-    """Provider adapter for NVIDIA NIM API (OpenAI-compatible)."""
+class OpenRouterProvider(BaseProvider):
+    """Provider adapter for the OpenRouter API."""
 
     def __init__(self):
         settings = get_settings()
-        base_url = settings.BASE_URL if settings.BASE_URL and "openai.com" not in settings.BASE_URL else "https://integrate.api.nvidia.com/v1"
-        self.client = OpenAI(base_url=base_url, api_key=settings.NVIDIA_API_KEY)
+        self.client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=settings.OPENROUTER_API_KEY,
+        )
 
     def generate(self, request: LLMRequest) -> LLMResponse:
         settings = get_settings()
@@ -26,6 +28,10 @@ class NvidiaProvider(BaseProvider):
                 "messages": request.messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
+                "extra_headers": {
+                    "HTTP-Referer": "https://github.com/devassist-ai",
+                    "X-Title": "DevAssist AI",
+                }
             }
             if request.task_type == "code_review":
                 kwargs["response_format"] = {"type": "json_object"}
@@ -43,7 +49,7 @@ class NvidiaProvider(BaseProvider):
             return LLMResponse(
                 content=content,
                 model=completion.model,
-                provider="nvidia",
+                provider="openrouter",
                 tokens_input=usage.prompt_tokens if usage else 0,
                 tokens_output=usage.completion_tokens if usage else 0,
                 latency=latency,
@@ -51,7 +57,7 @@ class NvidiaProvider(BaseProvider):
         except Exception as e:
             return LLMResponse(
                 model=model,
-                provider="nvidia",
+                provider="openrouter",
                 latency=time.time() - start,
                 error=str(e),
             )

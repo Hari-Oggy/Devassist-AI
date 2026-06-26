@@ -1,21 +1,26 @@
 import "./globals.css";
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
+import { ThemeProvider } from "@/components/ThemeProvider";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inter = Inter({
+  variable: "--font-sans",
   subsets: ["latin"],
+  display: "swap",
 });
 
-const geistMono = Geist_Mono({
+const jetbrainsMono = JetBrains_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "DevAssist-AI",
-  description: "Code Review Assistant Dashboard",
+  title: "DevAssist AI – Code Review Dashboard",
+  description:
+    "AI-powered code review assistant. Monitor repositories, analytics, and automated PR reviews in real time.",
+  keywords: ["code review", "AI", "DevOps", "pull request", "security", "analytics"],
 };
 
 export default function RootLayout({
@@ -24,12 +29,22 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-     <ClerkProvider>
+    <ClerkProvider>
       <html
         lang="en"
-        className={`${geistSans.variable} ${geistMono.variable} h-full antialiased dark`}
+        className={`${inter.variable} ${jetbrainsMono.variable} h-full antialiased dark`}
+        suppressHydrationWarning
       >
-        <body className="min-h-full flex flex-col bg-zinc-950 text-slate-50">{children}</body>
+        <body className="min-h-full flex flex-col bg-background text-foreground transition-colors duration-300">
+          <ThemeProvider
+            attribute="class"
+            defaultTheme="dark"
+            enableSystem
+            disableTransitionOnChange
+          >
+            {children}
+          </ThemeProvider>
+        </body>
       </html>
     </ClerkProvider>
   );

@@ -54,3 +54,48 @@ The router automatically falls back to other providers if the primary fails.
 - **Frontend:** http://localhost:8501
 - **API Docs:** http://localhost:8000/docs
 - **Health Check:** http://localhost:8000/health
+
+## Expose Local Development With ngrok
+
+Use the ngrok CLI for local demos and webhook testing. It keeps tunneling outside
+the application code and avoids starting public tunnels automatically in normal
+development or production runs.
+
+Install and authenticate ngrok once:
+
+```powershell
+ngrok config add-authtoken <your_ngrok_token>
+```
+
+Expose the FastAPI backend for GitHub/GitLab webhooks:
+
+```powershell
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+.\scripts\start-ngrok.ps1 -Target api
+```
+
+When ngrok prints its HTTPS forwarding URL, use these webhook URLs:
+
+```text
+GitHub: https://<your-ngrok-url>/api/v3/github/webhook
+GitLab:  https://<your-ngrok-url>/api/v3/gitlab/
+```
+
+Expose the Next.js frontend only when you want to share the UI:
+
+```powershell
+cd frontend
+npm run dev
+cd ..
+.\scripts\start-ngrok.ps1 -Target frontend
+```
+
+If you have a reserved/static ngrok domain, pass it with `-Url` or set
+`NGROK_URL`:
+
+```powershell
+.\scripts\start-ngrok.ps1 -Target api -Url https://your-domain.ngrok.app
+```
+
+Use `pyngrok` only if Python code needs to create and tear down tunnels
+programmatically, such as in integration tests or a custom dev launcher.

@@ -1,10 +1,15 @@
 """
-PostgreSQL Database Layer — DevAssist-AI Phase 5.
+Database Layer — DevAssist-AI Phase 5.
 
 Provides an async SQLAlchemy engine, session factory, and Base declarative
-class for all ORM models.  Uses asyncpg driver for maximum performance.
+class for all ORM models.
 
-Never modifies existing SQLite-based code — this is a standalone new module.
+Supports two backends:
+  1. PostgreSQL (production) — via asyncpg driver
+  2. SQLite (local dev fallback) — via aiosqlite driver
+
+If PostgreSQL is unreachable at startup, the system automatically falls back
+to a local SQLite file at ./data/devassist.db so the app works without Docker.
 
 Environment variables (from .env):
     DATABASE_URL — PostgreSQL connection string
@@ -17,8 +22,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import socket
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+from urllib.parse import urlparse
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -31,20 +38,67 @@ from core.logger import get_logger
 
 logger = get_logger("models.database")
 
-# ── Default to asyncpg driver ─────────────────────────────────────────
+# ── Resolve database URL ──────────────────────────────────────────────
 _DEFAULT_URL = "postgresql+asyncpg://devassist:devassist@localhost:5432/devassist"
-_DATABASE_URL: str = os.environ.get("DATABASE_URL", _DEFAULT_URL)
+_CONFIGURED_URL: str = os.environ.get("DATABASE_URL", _DEFAULT_URL)
 
 # Normalise sync postgres:// → asyncpg variant
-if _DATABASE_URL.startswith("postgresql://"):
-    _DATABASE_URL = _DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
-if _DATABASE_URL.startswith("postgres://"):
-    _DATABASE_URL = _DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+if _CONFIGURED_URL.startswith("postgresql://"):
+    _CONFIGURED_URL = _CONFIGURED_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+if _CONFIGURED_URL.startswith("postgres://"):
+    _CONFIGURED_URL = _CONFIGURED_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+
+# ── SQLite fallback path ──────────────────────────────────────────────
+_SQLITE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "devassist.db")
+_SQLITE_URL = f"sqlite+aiosqlite:///{_SQLITE_PATH}"
+
+_using_sqlite = False
+
+
+def _is_pg_reachable(url: str, timeout: float = 2.0) -> bool:
+    """Quick TCP check to see if the PostgreSQL host/port is reachable."""
+    try:
+        parsed = urlparse(url.replace("postgresql+asyncpg://", "http://"))
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 5432
+        sock = socket.create_connection((host, port), timeout=timeout)
+        sock.close()
+        return True
+    except (OSError, socket.timeout, ConnectionRefusedError):
+        return False
+
+
+def _resolve_database_url() -> str:
+    """Return the database URL to use — PostgreSQL if reachable, else SQLite."""
+    global _using_sqlite
+
+    # If already explicitly sqlite, use it
+    if _CONFIGURED_URL.startswith("sqlite"):
+        _using_sqlite = True
+        return _CONFIGURED_URL
+
+    # Check if PostgreSQL is reachable
+    if _is_pg_reachable(_CONFIGURED_URL):
+        logger.info("PostgreSQL is reachable — using PostgreSQL backend.")
+        _using_sqlite = False
+        return _CONFIGURED_URL
+    else:
+        logger.warning(
+            "PostgreSQL is NOT reachable at %s. "
+            "Falling back to SQLite at %s. "
+            "Start Docker (docker-compose up) to use PostgreSQL.",
+            _CONFIGURED_URL, _SQLITE_PATH
+        )
+        # Ensure data directory exists
+        os.makedirs(os.path.dirname(_SQLITE_PATH), exist_ok=True)
+        _using_sqlite = True
+        return _SQLITE_URL
+
+
+_DATABASE_URL: str = _resolve_database_url()
 
 
 # ── Engine (lazy) ─────────────────────────────────────────────────────
-# Engine is created on first use to avoid import-time driver errors
-# when asyncpg is not installed (e.g., during unit tests with aiosqlite).
 _engine = None
 _session_factory = None
 
@@ -53,14 +107,18 @@ def _get_engine():
     """Return the singleton async engine, creating it on first call."""
     global _engine
     if _engine is None:
-        _engine = create_async_engine(
-            _DATABASE_URL,
-            echo=False,
-            pool_size=10,
-            max_overflow=20,
-            pool_pre_ping=True,
-            pool_recycle=300,
-        )
+        kwargs = {
+            "echo": False,
+            "pool_pre_ping": True,
+        }
+        if not _using_sqlite:
+            # PostgreSQL-specific pool settings
+            kwargs.update({
+                "pool_size": 10,
+                "max_overflow": 20,
+                "pool_recycle": 300,
+            })
+        _engine = create_async_engine(_DATABASE_URL, **kwargs)
     return _engine
 
 
@@ -85,6 +143,11 @@ def engine():
 
 def AsyncSessionFactory() -> async_sessionmaker[AsyncSession]:
     return _get_session_factory()
+
+
+def is_using_sqlite() -> bool:
+    """Return True if the system is running on the SQLite fallback."""
+    return _using_sqlite
 
 
 # ── Declarative base ───────────────────────────────────────────────────
@@ -118,7 +181,8 @@ async def create_all_tables() -> None:
     from models import entities  # noqa: F401
     async with _get_engine().begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("All database tables created.")
+    backend = "SQLite" if _using_sqlite else "PostgreSQL"
+    logger.info("All database tables created (%s).", backend)
 
 
 async def drop_all_tables() -> None:

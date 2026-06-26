@@ -25,11 +25,11 @@ logger = get_logger("agents.review")
 
 
 class ReviewAgent:
-    def __init__(self):
+    def __init__(self, repo_name: str = None):
         self.settings = get_settings()
         self.router = LLMRouter()
         self.retriever = CodebaseRetriever()
-        self.github_client = get_github_client()
+        self.github_client = get_github_client(repo_name)
         self.audit_log: list[str] = []
 
     # ─── Per-File Review Helper (used by both review_pr and review_pr_incremental) ─

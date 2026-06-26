@@ -3,6 +3,7 @@ GitHub Webhook Handler — auto-triggers reviews on PR events.
 
 Handles:
   - pull_request.opened / synchronize / reopened → triggers review
+  - pull_request.closed (merged) → triggers documentation generation
   - issue_comment.created → triggers conversation response
 """
 
@@ -95,7 +96,7 @@ async def _trigger_review(pr_number: int, action: str, context: dict):
 
     try:
         from agents.review_agent import ReviewAgent
-        agent = ReviewAgent()
+        agent = ReviewAgent(repo_name=context.get("project_path"))
         result = await asyncio.to_thread(agent.review_pr_incremental, pr_number)
 
         if result.get("success"):
@@ -140,6 +141,33 @@ def _trigger_conversation(pr_number: int, comment_data: dict):
     except Exception as e:
         logger.error(f"Conversation response failed: {e}")
         return {"status": "error", "error": str(e)}
+
+
+def _trigger_documentation(pr_data: dict, repo_data: dict):
+    """Dispatch documentation generation to Celery worker when a PR is merged."""
+    pr_number = pr_data.get("number")
+    repo_full_name = repo_data.get("full_name", "")
+
+    # Collect merged file paths from PR (best-effort via context)
+    # We pass the repo name so the doc agent can clone if needed
+    payload = {
+        "repo": repo_full_name,
+        "pr_number": pr_number,
+        "merge_commit_sha": pr_data.get("merge_commit_sha", ""),
+        "base_branch": pr_data.get("base", {}).get("ref", ""),
+    }
+
+    try:
+        from workers.doc_worker import run_documentation
+        task = run_documentation.delay(
+            file_path=repo_full_name,  # doc_agent interprets this as a repo identifier
+            save_updated=False,
+        )
+        logger.info(f"Documentation task queued for merged PR #{pr_number} as {task.id}")
+        return {"status": "queued", "pr_number": pr_number, "task_id": task.id}
+    except Exception as e:
+        logger.warning(f"Failed to queue documentation task for PR #{pr_number}: {e}")
+        return {"status": "skipped", "reason": str(e)}
 
 
 @router.post("/webhook")
@@ -209,5 +237,16 @@ async def github_webhook(request: Request):
         logger.info(f"Webhook: Comment on PR #{pr_number} — triggering conversation")
         result = _trigger_conversation(pr_number, comment)
         return {"status": "conversation_triggered", "pr_number": pr_number, "result": result}
+
+    # ─── Pull Request Merged — Documentation Generation ───────────────────
+    if event == "pull_request" and action == "closed":
+        pr_data = data.get("pull_request", {})
+        if pr_data.get("merged", False):
+            pr_number = pr_data.get("number")
+            repo_data = data.get("repository", {})
+            logger.info(f"Webhook: PR #{pr_number} merged — triggering documentation")
+            result = _trigger_documentation(pr_data, repo_data)
+            return {"status": "documentation_triggered", "pr_number": pr_number, "result": result}
+        return {"status": "ignored", "reason": "PR closed but not merged"}
 
     return {"status": "ignored", "event": event, "action": action}

@@ -42,6 +42,9 @@ def _get_provider(provider_name: str) -> BaseProvider:
     elif provider_name == "nvidia":
         from providers.nvidia_provider import NvidiaProvider
         return NvidiaProvider()
+    elif provider_name == "openrouter":
+        from providers.openrouter_provider import OpenRouterProvider
+        return OpenRouterProvider()
     else:
         raise ValueError(f"Unknown provider: {provider_name}")
 
@@ -95,6 +98,8 @@ class LLMRouter:
             return bool(s.GEMINI_API_KEY) and s.GEMINI_API_KEY not in placeholder_values
         elif provider_name == "nvidia":
             return bool(s.NVIDIA_API_KEY) and s.NVIDIA_API_KEY not in placeholder_values
+        elif provider_name == "openrouter":
+            return bool(s.OPENROUTER_API_KEY) and s.OPENROUTER_API_KEY not in placeholder_values
         elif provider_name == "local":
             return True  # Local LLMs don't need an API key
         return False
@@ -177,13 +182,21 @@ class LLMRouter:
         """
         chain = get_fallback_chain(request.task_type)
 
-        # Front-load the configured model
+        # Prioritize request.metadata.get("model") or self.settings.LLM_MODEL
+        requested_model = request.metadata.get("model")
         configured_model = self.settings.LLM_MODEL
-        if configured_model and configured_model not in chain:
-            chain = [configured_model] + chain
-        elif configured_model and configured_model in chain:
-            chain.remove(configured_model)
-            chain = [configured_model] + chain
+
+        models_to_prioritize = []
+        if requested_model:
+            models_to_prioritize.append(requested_model)
+        if configured_model and configured_model not in models_to_prioritize:
+            models_to_prioritize.append(configured_model)
+
+        # Prepend in reverse order so the first in models_to_prioritize ends up at the front
+        for m in reversed(models_to_prioritize):
+            if m in chain:
+                chain.remove(m)
+            chain = [m] + chain
 
         # Remove models whose providers have no API key configured
         chain = [

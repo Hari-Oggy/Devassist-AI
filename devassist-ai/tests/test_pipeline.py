@@ -168,11 +168,14 @@ class TestPipelineConfig:
     """Tests for pipeline_config.py."""
 
     def test_default_values(self):
+        import os
+        from unittest.mock import patch
         from core.pipeline_config import PipelineSettings
-        settings = PipelineSettings()
-        assert settings.REVIEW_MODE == "fast"
-        assert settings.DISTILL_MODEL == "gemini-2.5-flash"
-        assert settings.VALIDATION_CONFIDENCE_THRESHOLD == 0.6
+        with patch.dict(os.environ, {}, clear=True):
+            settings = PipelineSettings(_env_file=None)
+            assert settings.REVIEW_MODE == "fast"
+            assert settings.DISTILL_MODEL == "gemini-2.5-flash"
+            assert settings.VALIDATION_CONFIDENCE_THRESHOLD == 0.6
 
     def test_ensemble_enabled_property(self):
         from core.pipeline_config import PipelineSettings

@@ -9,10 +9,10 @@ load_dotenv()
 logger = get_logger("agents.github_tool")
 
 class GitHubClient:
-    def __init__(self):
+    def __init__(self, repo_name: str = None):
         settings = get_settings()
-        repo_name = settings.GITHUB_REPO
-        if not repo_name or repo_name == "owner/repository-name":
+        self.repo_name = repo_name or settings.GITHUB_REPO
+        if not self.repo_name or self.repo_name == "owner/repository-name":
             raise ValueError("GITHUB_REPO is missing or not configured. Please set owner/repository-name in .env.")
 
         # Try GitHub App auth first (bot identity), fall back to PAT
@@ -37,10 +37,10 @@ class GitHubClient:
             self._auth_mode = "pat"
 
         try:
-            self.repo = self.github.get_repo(repo_name)
+            self.repo = self.github.get_repo(self.repo_name)
         except GithubException as e:
             if e.status == 404:
-                raise ValueError(f"Repository {repo_name} not found. Check GITHUB_REPO in .env")
+                raise ValueError(f"Repository {self.repo_name} not found. Check GITHUB_REPO in .env")
             raise
 
     def get_pr_diff(self, pr_number: int) -> str:
@@ -267,8 +267,8 @@ class GitHubClient:
 
 _github_client_instance = None
 
-def get_github_client() -> GitHubClient:
+def get_github_client(repo_name: str = None) -> GitHubClient:
     global _github_client_instance
-    if _github_client_instance is None:
-        _github_client_instance = GitHubClient()
+    if _github_client_instance is None or (repo_name and getattr(_github_client_instance, 'repo_name', None) != repo_name):
+        _github_client_instance = GitHubClient(repo_name)
     return _github_client_instance

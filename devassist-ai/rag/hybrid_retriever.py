@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import os
 import pickle
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from core.logger import get_logger
 from rag.ast_chunker import CodeChunk
 from rag.rag_config import RAGSettings, get_rag_settings
+from rag.reranker import Reranker
 
 logger = get_logger("rag.hybrid_retriever")
 
@@ -87,6 +89,9 @@ class BM25Index:
             chunks: All code chunks to index.
         """
         if not self._available:
+            return
+        if not chunks:
+            logger.warning("BM25Index.build called with empty chunk list")
             return
         from rank_bm25 import BM25Okapi
         self._chunks = chunks
@@ -147,7 +152,6 @@ class BM25Index:
         return expanded
 
 
-import re  # noqa: E402 — needed after BM25Index definition
 
 
 # ── Dense FAISS index wrapper ──────────────────────────────────────────
@@ -310,6 +314,9 @@ class HybridRetriever:
         self._bm25 = BM25Index()
         self._chunks: list[CodeChunk] = []
         self._is_built = False
+        self._reranker: Optional[Reranker] = None
+        if self._cfg.RAG_RERANK_ENABLED:
+            self._reranker = Reranker(model_name=self._cfg.RAG_RERANK_MODEL)
 
     # ── Public API ─────────────────────────────────────────────────────
 
@@ -362,10 +369,10 @@ class HybridRetriever:
             ]
 
         if mode == "dense":
-            return self._wrap_results(dense_hits, [], rrf_k, final_k)
+            return self._maybe_rerank(query, self._wrap_results(dense_hits, [], rrf_k, final_k))
         if mode == "bm25":
-            return self._wrap_results([], bm25_hits, rrf_k, final_k)
-        return self._wrap_results(dense_hits, bm25_hits, rrf_k, final_k)
+            return self._maybe_rerank(query, self._wrap_results([], bm25_hits, rrf_k, final_k))
+        return self._maybe_rerank(query, self._wrap_results(dense_hits, bm25_hits, rrf_k, final_k))
 
     def retrieve_as_context(self, query: str, k: Optional[int] = None) -> str:
         """Retrieve and format results as a plain-text context string.
@@ -469,3 +476,29 @@ class HybridRetriever:
         # Sort by RRF score descending
         ranked = sorted(scores.values(), key=lambda r: r.rrf_score, reverse=True)
         return ranked[:final_k]
+
+    def _maybe_rerank(
+        self,
+        query: str,
+        results: list[RetrievedChunk],
+    ) -> list[RetrievedChunk]:
+        """Apply cross-encoder reranking if enabled, otherwise pass through."""
+        if not self._reranker or not results:
+            return results
+        docs = [{"content": r.chunk.content, "source_path": r.chunk.file_path} for r in results]
+        reranked_docs = self._reranker.rerank(query, docs, top_k=len(results))
+        # Re-order results to match reranked order
+        path_to_result = {r.chunk.file_path + str(r.chunk.start_line): r for r in results}
+        reranked: list[RetrievedChunk] = []
+        for doc in reranked_docs:
+            key = doc["source_path"]
+            # Match by source_path prefix since reranker docs don't carry start_line
+            for r in results:
+                if r.chunk.file_path == key and r not in reranked:
+                    reranked.append(r)
+                    break
+        # Append any unmatched results at the end
+        for r in results:
+            if r not in reranked:
+                reranked.append(r)
+        return reranked

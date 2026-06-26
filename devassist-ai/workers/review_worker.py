@@ -8,6 +8,7 @@ from typing import Any
 
 from taskqueue.celery_app import celery_app
 from core.config import get_settings
+from core.pipeline_config import get_pipeline_settings
 from core.logger import get_logger
 from models.database import get_db_session_context
 from models.repositories import RepositoryRepo, PullRequestRepo, ReviewRepo, FindingRepo, ReviewEventRepo
@@ -20,6 +21,12 @@ from codegraph.graph_builder import CodeGraphBuilder
 from codegraph.repo_cloner import RepoCloner
 from agents.tools.github_tool import get_github_client
 from prompts import load_prompt
+
+# RAG Imports (Phase 4)
+from rag.ast_chunker import ASTChunker
+from rag.hybrid_retriever import HybridRetriever
+from rag.embeddings import get_embedding_model
+from rag.history_indexer import HistoryIndexer
 
 logger = get_logger("workers.review")
 settings = get_settings()
@@ -93,6 +100,7 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
             review = await ReviewRepo.create(
                 session=session,
                 pull_request_id=pr.id,
+                mode=get_pipeline_settings().REVIEW_MODE,
                 commit_sha=context.get("last_commit_sha", "")
             )
             review_id = review.id
@@ -167,13 +175,16 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                         "deletions": del_lines,
                     })
         else:
-            # Directly use PyGithub with the repo from the webhook payload
-            # This avoids the GITHUB_REPO env requirement in GitHubClient.__init__
-            github_token = settings.GITHUB_TOKEN or os.getenv("GITHUB_TOKEN")
-            from github import Github, Auth as GHAuth
-            gh = Github(github_token) if github_token else Github()
-            gh_repo = gh.get_repo(project_path)
-            pr_obj = gh_repo.get_pull(int(mr_iid))
+            # Use GitHubClient instead of directly instantiating PyGithub
+            from agents.tools.github_tool import get_github_client
+            try:
+                github_client = get_github_client(repo_name=project_path)
+                gh_repo = github_client.repo
+                pr_obj = gh_repo.get_pull(int(mr_iid))
+            except Exception as e:
+                logger.error(f"Failed to fetch PR #{mr_iid} on repo {project_path}: {e}")
+                raise
+
             SKIP_EXTENSIONS = {
                 '.class', '.pyc', '.pyo', '.o', '.so', '.dll', '.exe',
                 '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.svg', '.webp',
@@ -222,12 +233,83 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
             report = analyzer.analyze(changed_files=changed_filenames, pr_number=int(mr_iid))
             impact_report = report.to_dict()
 
+            # --- Static Analysis ---
+            from analyzers.static_analyzer import StaticAnalyzer
+            logger.info("Running StaticAnalyzer on changed files...")
+            try:
+                static_analyzer = StaticAnalyzer(max_workers=4)
+                sandbox_result = static_analyzer.analyze(
+                    target_path=repo_path,
+                    file_paths=changed_filenames,
+                    language="multi"
+                )
+                findings_map = sandbox_result.findings_by_file()
+                logger.info(f"StaticAnalyzer completed with {len(sandbox_result.all_findings)} findings.")
+            except Exception as e:
+                logger.warning(f"StaticAnalyzer failed: {e}")
+                findings_map = {}
+            # -----------------------
+
+            # Index codebase for RAG
+            try:
+                from rag.rag_config import get_rag_settings
+                rag_cfg = get_rag_settings()
+                repo_files = []
+                for root, dirs, files in os.walk(repo_path):
+                    dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules', '__pycache__', '.venv', 'dist', 'build', '.next')]
+                    for file in files:
+                        ext = os.path.splitext(file)[1].lower()
+                        if ext in rag_cfg.code_extensions:
+                            file_path = os.path.join(root, file)
+                            if os.path.getsize(file_path) <= rag_cfg.RAG_MAX_FILE_BYTES:
+                                try:
+                                    with open(file_path, 'r', encoding='utf-8') as f:
+                                        repo_files.append({"file_path": file_path, "content": f.read()})
+                                except Exception:
+                                    pass
+                
+                logger.info(f"Chunking {len(repo_files)} files for RAG...")
+                chunker = ASTChunker()
+                chunks = chunker.chunk_files(repo_files)
+                retriever = HybridRetriever(get_embedding_model())
+                retriever.build(chunks)
+                logger.info("RAG indexing complete")
+            except Exception as e:
+                logger.warning(f"RAG indexing failed: {e}")
+
             for file_data in reviewable_files:
+                # Retrieve context from RAG
+                filename = file_data.get("filename", "")
+                patch = file_data.get("patch", "")
+                rag_context = ""
+                if 'retriever' in locals():
+                    try:
+                        # Use simple format for context injection
+                        rag_context = retriever.retrieve_as_context(f"Review changes in {filename}:\n{patch[:500]}", k=5)
+                    except Exception as e:
+                        logger.warning(f"Failed to retrieve context for {filename}: {e}")
+
+                # Format lint results for this file
+                file_lint_result = ""
+                file_findings = []
+                for f_path, f_list in findings_map.items():
+                    if filename.replace("\\", "/") in f_path.replace("\\", "/"):
+                        file_findings.extend(f_list)
+                
+                if file_findings:
+                    lines = []
+                    for lf in file_findings:
+                        sev = lf.severity.value if hasattr(lf.severity, "value") else str(lf.severity)
+                        lines.append(f"[{lf.tool}] line {lf.line}: {sev} ({lf.rule_id}) {lf.message}")
+                    file_lint_result = "\n".join(lines)
+
                 result = pipeline.run(
                     file_data=file_data,
                     system_prompt=system_prompt,
                     impact_report=impact_report,
                     pr_number=int(mr_iid),
+                    context=rag_context,
+                    lint_result=file_lint_result,
                 )
                 results.append(result)
                 all_findings.extend(result.findings)
@@ -269,6 +351,55 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
             summaries = [f"File {f.get('filename')}: {res.distillation.summary}" for f, res in zip(reviewable_files, results) if res.distillation and res.distillation.summary]
             raw_summary = "\n".join(summaries) if summaries else f"Review completed. Found {len(all_findings)} issues across {len(reviewable_files)} files."
 
+            # Post GitHub Comments
+            if provider == ProviderType.GITHUB and 'gh_repo' in locals():
+                try:
+                    pr_obj = gh_repo.get_pull(int(mr_iid))
+                    commit_sha = context.get("last_commit_sha", "")
+                    if commit_sha:
+                        gh_commit = gh_repo.get_commit(commit_sha)
+                        for fd in findings_dicts:
+                            # Only post errors and warnings that have file/line data
+                            if fd.get("severity") in ["error", "warning"] and fd.get("file") and fd.get("line"):
+                                # Dedup check
+                                already_exists = False
+                                for comment in pr_obj.get_review_comments():
+                                    if ("<!-- devassist-ai -->" in (comment.body or "") 
+                                        and comment.path == fd["file"] 
+                                        and getattr(comment, 'line', comment.position) == fd["line"] 
+                                        and fd["comment"][:50] in (comment.body or "")):
+                                        already_exists = True
+                                        break
+                                
+                                if not already_exists:
+                                    body_text = f"**{fd['severity'].upper()}** ({fd['category']}): {fd['comment']}"
+                                    if fd.get("code_fix"):
+                                        body_text += f"\n\n```python\n{fd['code_fix']}\n```"
+                                    marked_body = f"{body_text}\n\n<!-- devassist-ai -->"
+                                    
+                                    try:
+                                        pr_obj.create_review_comment(
+                                            body=marked_body,
+                                            commit=gh_commit,
+                                            path=fd["file"],
+                                            line=int(fd["line"]),
+                                            side="RIGHT"
+                                        )
+                                        logger.info(f"Posted inline comment to {fd['file']}:{fd['line']}")
+                                    except Exception as e:
+                                        logger.warning(f"Failed to post inline comment to {fd['file']}:{fd['line']} (often due to line not in diff hunk): {e}")
+
+                    # Post summary comment
+                    if raw_summary:
+                        formatted_summary = f"### DevAssist-AI Review Summary\n\n**Findings:** {error_count} Errors, {warning_count} Warnings\n\n"
+                        for fd in findings_dicts:
+                            if fd.get("severity") in ["error", "warning"]:
+                                formatted_summary += f"- **{fd['severity'].upper()}** in `{fd.get('file')}:{fd.get('line')}`: {fd.get('comment')}\n"
+                        pr_obj.create_issue_comment(f"{formatted_summary}\n\n<!-- devassist-ai -->")
+                        logger.info("Posted summary comment to GitHub PR")
+                except Exception as e:
+                    logger.error(f"Failed to post comments to GitHub: {e}")
+
             await ReviewRepo.mark_completed(
                 session=session, 
                 review_id=review_id, 
@@ -295,7 +426,24 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                 findings_count=len(all_findings),
                 duration_seconds=result.duration_seconds
             )
-        
+
+        # 7. Persist review to history (project memory)
+        try:
+            diff_summary = f"{len(all_findings)} findings across {len(reviewable_files)} file(s)"
+            history_indexer = HistoryIndexer(get_embedding_model())
+            history_indexer.load()
+            history_indexer.add_review(
+                pr_number=int(mr_iid),
+                repo=project_path,
+                title=context.get("mr_title", ""),
+                diff_summary=diff_summary,
+                findings=[f.dict() for f in all_findings],
+                resolution="open",
+                metadata={"mode": pipeline.mode, "model": model_used},
+            )
+            logger.info(f"HistoryIndexer: saved PR #{mr_iid} review to project memory")
+        except Exception as hist_err:
+            logger.warning(f"HistoryIndexer failed (non-fatal): {hist_err}")
         return {
             "success": True,
             "findings_count": len(all_findings),
