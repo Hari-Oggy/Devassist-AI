@@ -80,7 +80,7 @@ Assess how much reasoning effort the downstream model needs:
 
 ## OUTPUT FORMAT
 
-Return a single JSON object. No markdown code fences. No explanation before or after the JSON. No conversational text.
+Return ONLY a single JSON object. You MUST NOT include any markdown formatting, no ` ```json ` fences, and absolutely no conversational filler before or after the JSON.
 
 {
   "change_type": "feature",

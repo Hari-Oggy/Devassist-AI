@@ -18,17 +18,20 @@ def test_database_url_normalization():
     import models.database
     
     # Test case: postgresql://
-    with patch.dict(os.environ, {"DATABASE_URL": "postgresql://user:pass@localhost:5432/db"}):
+    with patch.dict(os.environ, {"DATABASE_URL": "postgresql://user:pass@localhost:5432/db"}), \
+         patch("models.database._is_pg_reachable", return_value=True):
         importlib.reload(models.database)
         assert models.database._DATABASE_URL == "postgresql+asyncpg://user:pass@localhost:5432/db"
         
     # Test case: postgres:// (Heroku style)
-    with patch.dict(os.environ, {"DATABASE_URL": "postgres://user:pass@localhost:5432/db"}):
+    with patch.dict(os.environ, {"DATABASE_URL": "postgres://user:pass@localhost:5432/db"}), \
+         patch("models.database._is_pg_reachable", return_value=True):
         importlib.reload(models.database)
         assert models.database._DATABASE_URL == "postgresql+asyncpg://user:pass@localhost:5432/db"
         
     # Test case: already correct postgresql+asyncpg://
-    with patch.dict(os.environ, {"DATABASE_URL": "postgresql+asyncpg://user:pass@localhost:5432/db"}):
+    with patch.dict(os.environ, {"DATABASE_URL": "postgresql+asyncpg://user:pass@localhost:5432/db"}), \
+         patch("models.database._is_pg_reachable", return_value=True):
         importlib.reload(models.database)
         assert models.database._DATABASE_URL == "postgresql+asyncpg://user:pass@localhost:5432/db"
         
@@ -44,7 +47,8 @@ def test_database_url_normalization():
 # ── 2. SSE GENERATOR CONSUMPTION VERIFICATION ─────────────────────────
 
 @pytest.mark.asyncio
-async def test_sse_happy_path():
+@patch('api.sse._get_redis', return_value=None)
+async def test_sse_happy_path(mock_get_redis):
     """Verify standard SSE flow: connected handshake, published finding, and auto-termination on completion."""
     from api.sse import sse_manager
     review_id = 1001
@@ -55,6 +59,9 @@ async def test_sse_happy_path():
     first_chunk = await generator.__anext__()
     assert "event: connected" in first_chunk
     assert "SSE stream connected" in first_chunk
+    
+    # Wait for Redis subscriber thread to actually connect before publishing
+    await asyncio.sleep(0.1)
     
     # Publish finding
     await sse_manager.publish_finding(
@@ -87,7 +94,8 @@ async def test_sse_happy_path():
 
 
 @pytest.mark.asyncio
-async def test_sse_failed_terminal():
+@patch('api.sse._get_redis', return_value=None)
+async def test_sse_failed_terminal(mock_get_redis):
     """Verify that SSE stream self-terminates on review_failed terminal event."""
     from api.sse import sse_manager
     review_id = 1002
@@ -113,7 +121,8 @@ async def test_sse_failed_terminal():
 
 
 @pytest.mark.asyncio
-async def test_sse_keepalive():
+@patch('api.sse._get_redis', return_value=None)
+async def test_sse_keepalive(mock_get_redis):
     """Verify that SSE stream periodically emits keepalive heartbeats if no events are published."""
     from api.sse import sse_manager
     review_id = 1003
@@ -166,7 +175,7 @@ def test_api_repository_clone_url_construction_github_no_token(mock_db):
         assert response.status_code == 200
         
         # Verify RepoCloner was called with correct public HTTPS URL
-        MockCloner.assert_called_once_with(repo_url="https://github.com/user/repo.git")
+        MockCloner.assert_called_once_with(repo_url="https://github.com/user/repo.git", token=None, branch="main")
         app.dependency_overrides.clear()
 
 
@@ -194,7 +203,7 @@ def test_api_repository_clone_url_construction_github_with_token(mock_db):
         assert response.status_code == 200
         
         # Verify RepoCloner was called with correct authenticated HTTPS URL
-        MockCloner.assert_called_once_with(repo_url="https://x-access-token:ghp_mocktesttoken123@github.com/user/repo.git")
+        MockCloner.assert_called_once_with(repo_url="https://github.com/user/repo.git", token="x-access-token:ghp_mocktesttoken123", branch="main")
         app.dependency_overrides.clear()
 
 
@@ -223,5 +232,5 @@ def test_api_repository_clone_url_construction_gitlab_with_token(mock_db):
         assert response.status_code == 200
         
         # Verify RepoCloner was called with custom gitlab host and oauth2 auth
-        MockCloner.assert_called_once_with(repo_url="https://oauth2:glpat-mocktoken@gitlab.custom.domain/group/subgroup/project.git")
+        MockCloner.assert_called_once_with(repo_url="https://gitlab.custom.domain/group/subgroup/project.git", token="oauth2:glpat-mocktoken", branch="main")
         app.dependency_overrides.clear()

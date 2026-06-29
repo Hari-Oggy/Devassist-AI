@@ -139,16 +139,9 @@ class StaticAnalyzer:
         language: str,
         tools: Optional[list[str]],
     ) -> list[BaseRunner]:
-        """Instantiate and return the applicable runner objects.
-
-        Args:
-            language: Target ecosystem key.
-            tools: Optional allowlist of TOOL_NAME strings.
-
-        Returns:
-            List of instantiated :class:`~analyzers.tool_runners.base_runner.BaseRunner`.
-        """
-        runner_classes = _LANGUAGE_RUNNERS.get(language.lower(), PYTHON_RUNNERS)
+        """Instantiate and return the applicable runner objects."""
+        lang_key = language.lower()
+        runner_classes = _LANGUAGE_RUNNERS.get(lang_key, PYTHON_RUNNERS)
 
         # Apply optional tools filter
         if tools:
@@ -156,13 +149,34 @@ class StaticAnalyzer:
 
         instances = [cls() for cls in runner_classes]
 
+        # Inject sandbox if configured
+        if self.use_sandbox:
+            if not self.sandbox:
+                from analyzers.docker_sandbox import DockerSandbox
+                # Dynamically select an appropriate base image for the language
+                _LANGUAGE_IMAGES = {
+                    "python": "python:3.11-slim",
+                    "javascript": "node:18-slim",
+                    "typescript": "node:18-slim",
+                    "java": "amazoncorretto:17",
+                    "rust": "rust:1.70-slim",
+                    "go": "golang:1.20-slim",
+                    "multi": "ubuntu:22.04",
+                }
+                image = _LANGUAGE_IMAGES.get(lang_key, "ubuntu:22.04")
+                self.sandbox = DockerSandbox(image=image)
+            for runner in instances:
+                runner.sandbox = self.sandbox
+
         # Filter to only installed tools (log skipped ones)
         available = []
         for runner in instances:
-            if runner.is_available():
+            # If we're using a sandbox, we bypass local installation checks 
+            # because the tools exist inside the docker image (ideally).
+            if self.use_sandbox or runner.is_available():
                 available.append(runner)
             else:
-                logger.debug("%s not available — skipping", runner.TOOL_NAME)
+                logger.debug("%s not available locally — skipping", runner.TOOL_NAME)
 
         return available
 

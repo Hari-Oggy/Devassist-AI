@@ -529,13 +529,27 @@ class ReviewPipeline:
             - [...]
             - Markdown-fenced JSON
             - Mixed text with embedded JSON
-
-        This mirrors the parsing logic from ReviewAgent._parse_comments()
-        to maintain backward compatibility.
         """
-        # Strip markdown code fences
-        cleaned = re.sub(r"```(?:json)?\s*", "", output)
-        cleaned = re.sub(r"```\s*$", "", cleaned.strip()).strip()
+        cleaned = output.strip()
+        # Remove markdown fences
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r"```\s*$", "", cleaned, flags=re.MULTILINE)
+        
+        # Extract outermost JSON object/array to bypass conversational filler
+        first_brace = cleaned.find('{')
+        first_bracket = cleaned.find('[')
+        start_idx = -1
+        end_idx = -1
+        
+        if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
+            start_idx = first_brace
+            end_idx = cleaned.rfind('}')
+        elif first_bracket != -1:
+            start_idx = first_bracket
+            end_idx = cleaned.rfind(']')
+            
+        if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+            cleaned = cleaned[start_idx:end_idx+1]
 
         comments = []
         try:
@@ -547,26 +561,7 @@ class ReviewPipeline:
             else:
                 return []
         except json.JSONDecodeError:
-            # Fallback: try to extract JSON from text
-            match = re.search(
-                r'\{[^{]*"comments"\s*:\s*\[.*?\]\s*\}', cleaned, re.DOTALL
-            )
-            if not match:
-                match = re.search(r"\[\s*\{.*?\}\s*\]", cleaned, re.DOTALL)
-
-            if not match:
-                return []
-
-            try:
-                parsed = json.loads(match.group(0))
-                if isinstance(parsed, dict) and "comments" in parsed:
-                    comments = parsed["comments"]
-                elif isinstance(parsed, list):
-                    comments = parsed
-                else:
-                    return []
-            except json.JSONDecodeError:
-                return []
+            return []
 
         # Normalize and validate each finding
         valid_findings = []

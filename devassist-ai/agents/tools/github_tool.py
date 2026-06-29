@@ -9,21 +9,27 @@ load_dotenv()
 logger = get_logger("agents.github_tool")
 
 class GitHubClient:
-    def __init__(self, repo_name: str = None):
+    def __init__(self, repo_name: str = None, installation_id: int = None):
         settings = get_settings()
         self.repo_name = repo_name or settings.GITHUB_REPO
         if not self.repo_name or self.repo_name == "owner/repository-name":
             raise ValueError("GITHUB_REPO is missing or not configured. Please set owner/repository-name in .env.")
 
+        self._token = None
+        self._auth_mode = None
+
         # Try GitHub App auth first (bot identity), fall back to PAT
-        if settings.GITHUB_APP_ID and settings.GITHUB_APP_PRIVATE_KEY_PATH and settings.GITHUB_APP_INSTALLATION_ID:
+        inst_id = installation_id or settings.GITHUB_APP_INSTALLATION_ID
+        if settings.GITHUB_APP_ID and settings.GITHUB_APP_PRIVATE_KEY_PATH and inst_id:
             try:
                 key_path = settings.GITHUB_APP_PRIVATE_KEY_PATH
                 with open(key_path, "r") as f:
                     private_key = f.read()
-                app_auth = Auth.AppAuth(settings.GITHUB_APP_ID, private_key)
-                installation_auth = app_auth.get_installation_auth(settings.GITHUB_APP_INSTALLATION_ID)
-                self.github = Github(auth=installation_auth)
+                self._app_auth = Auth.AppAuth(settings.GITHUB_APP_ID, private_key)
+                self._inst_auth = self._app_auth.get_installation_auth(inst_id)
+                self.github = Github(auth=self._inst_auth)
+                self._auth_mode = "app"
+                self._installation_id = inst_id
                 self._auth_mode = "app"
                 logger.info(f"GitHub App authenticated (App ID: {settings.GITHUB_APP_ID})")
             except Exception as e:
@@ -33,6 +39,7 @@ class GitHubClient:
             token = settings.GITHUB_TOKEN or os.getenv("GITHUB_TOKEN")
             if not token or token == "your_github_personal_access_token_here":
                 raise ValueError("GITHUB_TOKEN is missing or not configured. Please set a valid PAT in .env.")
+            self._token = token
             self.github = Github(token)
             self._auth_mode = "pat"
 
@@ -42,6 +49,14 @@ class GitHubClient:
             if e.status == 404:
                 raise ValueError(f"Repository {self.repo_name} not found. Check GITHUB_REPO in .env")
             raise
+
+    def get_clone_token(self) -> str:
+        """Get a string token suitable for git clone over HTTPS."""
+        if self._auth_mode == "app":
+            # the Auth.AppAuth wrapper manages the token for pygithub,
+            # but to get the raw token for cloning we can use the installation auth
+            return self._inst_auth.token
+        return self._token
 
     def get_pr_diff(self, pr_number: int) -> str:
         try:
@@ -267,8 +282,8 @@ class GitHubClient:
 
 _github_client_instance = None
 
-def get_github_client(repo_name: str = None) -> GitHubClient:
+def get_github_client(repo_name: str = None, installation_id: int = None) -> GitHubClient:
     global _github_client_instance
     if _github_client_instance is None or (repo_name and getattr(_github_client_instance, 'repo_name', None) != repo_name):
-        _github_client_instance = GitHubClient(repo_name)
+        _github_client_instance = GitHubClient(repo_name, installation_id=installation_id)
     return _github_client_instance

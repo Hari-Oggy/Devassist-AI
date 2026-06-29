@@ -87,32 +87,17 @@ async def _trigger_review(pr_number: int, action: str, context: dict):
         logger.info(f"PR #{pr_number} review queued as task {task.id}")
         return {"status": "queued", "pr_number": pr_number, "task_id": task.id}
     except Exception as celery_err:
-        logger.warning(f"Celery unavailable ({celery_err}), falling back to sync review")
-
-    # Sync fallback — acquire lock to prevent concurrent reviews
-    if not acquire_review_lock(pr_number):
-        logger.info(f"PR #{pr_number} already locked — review in progress")
-        return {"status": "locked", "pr_number": pr_number}
-
-    try:
-        from agents.review_agent import ReviewAgent
-        agent = ReviewAgent(repo_name=context.get("project_path"))
-        result = await asyncio.to_thread(agent.review_pr_incremental, pr_number)
-
-        if result.get("success"):
-            clear_failures(pr_number)
-            logger.info(f"PR #{pr_number} review complete: {len(result.get('comments', []))} comments posted")
-        else:
-            record_failure(pr_number)
-            logger.warning(f"PR #{pr_number} review failed: {result.get('error')}")
-
-        return result
-    except Exception as e:
-        record_failure(pr_number)
-        logger.error(f"PR #{pr_number} review error: {e}")
-        return {"status": "error", "error": str(e)}
-    finally:
-        release_review_lock(pr_number)
+        logger.warning(f"Celery unavailable ({celery_err}), falling back to local async review")
+        
+        # Local fallback using the exact same modern pipeline logic
+        try:
+            from workers.review_worker import _run_review_async
+            # Run in the background of the FastAPI event loop to not block the webhook response
+            asyncio.create_task(_run_review_async(context))
+            return {"status": "fallback_queued", "pr_number": pr_number}
+        except Exception as fallback_err:
+            logger.error(f"Fallback review error: {fallback_err}")
+            return {"status": "error", "error": str(fallback_err)}
 
 
 def _trigger_conversation(pr_number: int, comment_data: dict):
@@ -213,6 +198,7 @@ async def github_webhook(request: Request):
             "is_draft": pr_data.get("draft", False),
             "mr_url": pr_data.get("html_url", ""),
             "last_commit_sha": pr_data.get("head", {}).get("sha", ""),
+            "installation_id": data.get("installation", {}).get("id"),
         }
         result = await _trigger_review(pr_number, action, context)
         return {"status": "review_triggered", "pr_number": pr_number, "result": result}
@@ -246,7 +232,52 @@ async def github_webhook(request: Request):
             repo_data = data.get("repository", {})
             logger.info(f"Webhook: PR #{pr_number} merged — triggering documentation")
             result = _trigger_documentation(pr_data, repo_data)
+            
+            # --- Added for RAG ---
+            # Trigger RAG index refresh
+            try:
+                from models.database import get_db_session_context
+                from models.repositories import RepositoryRepo
+                from workers.rag_worker import update_repo_rag_index
+                
+                async def dispatch_rag_update():
+                    async with get_db_session_context() as session:
+                        repo = await RepositoryRepo.get_by_full_name(session, "github", repo_data.get("full_name", ""))
+                        if repo:
+                            update_repo_rag_index.delay(repo.id)
+                            logger.info(f"Triggered RAG update for repo_id={repo.id} (PR Merged)")
+                
+                asyncio.create_task(dispatch_rag_update())
+            except Exception as e:
+                logger.warning(f"Failed to queue RAG update on merge: {e}")
+            # ---------------------
+            
             return {"status": "documentation_triggered", "pr_number": pr_number, "result": result}
         return {"status": "ignored", "reason": "PR closed but not merged"}
+
+    # ─── Push Events (Default Branch) ──────────────────────────────────────────
+    if event == "push":
+        ref = data.get("ref", "")
+        repo_data = data.get("repository", {})
+        default_branch = repo_data.get("default_branch", "main")
+        
+        if ref == f"refs/heads/{default_branch}":
+            try:
+                from models.database import get_db_session_context
+                from models.repositories import RepositoryRepo
+                from workers.rag_worker import update_repo_rag_index
+                
+                async def dispatch_rag_update_on_push():
+                    async with get_db_session_context() as session:
+                        repo = await RepositoryRepo.get_by_full_name(session, "github", repo_data.get("full_name", ""))
+                        if repo:
+                            update_repo_rag_index.delay(repo.id)
+                            logger.info(f"Triggered RAG update for repo_id={repo.id} (Push to default branch)")
+                
+                asyncio.create_task(dispatch_rag_update_on_push())
+                return {"status": "rag_update_triggered", "branch": default_branch}
+            except Exception as e:
+                logger.warning(f"Failed to queue RAG update on push: {e}")
+                return {"status": "error", "error": str(e)}
 
     return {"status": "ignored", "event": event, "action": action}

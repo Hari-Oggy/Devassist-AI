@@ -113,6 +113,7 @@ async def create_repository(
     from core.config import get_settings
     import os
     settings = get_settings()
+    token = None
     if repo_in.provider == ProviderType.GITLAB:
         gitlab_token = getattr(settings, "GITLAB_TOKEN", None) or ""
         gitlab_api_url = getattr(settings, "GITLAB_API_URL", None) or "https://gitlab.com"
@@ -120,21 +121,19 @@ async def create_repository(
         parsed = urlparse(gitlab_api_url)
         host = parsed.netloc or "gitlab.com"
         scheme = parsed.scheme or "https"
+        repo_url = f"{scheme}://{host}/{repo_in.full_name}.git"
         if gitlab_token:
-            repo_url = f"{scheme}://oauth2:{gitlab_token}@{host}/{repo_in.full_name}.git"
-        else:
-            repo_url = f"{scheme}://{host}/{repo_in.full_name}.git"
+            token = f"oauth2:{gitlab_token}"
     else:
         github_token = settings.GITHUB_TOKEN or os.getenv("GITHUB_TOKEN")
+        repo_url = f"https://github.com/{repo_in.full_name}.git"
         if github_token and github_token != "your_github_personal_access_token_here":
-            repo_url = f"https://x-access-token:{github_token}@github.com/{repo_in.full_name}.git"
-        else:
-            repo_url = f"https://github.com/{repo_in.full_name}.git"
+            token = f"x-access-token:{github_token}"
 
     # Validate reachable via RepoCloner
     from codegraph.repo_cloner import RepoCloner
     try:
-        with RepoCloner(repo_url=repo_url) as cloner:
+        with RepoCloner(repo_url=repo_url, token=token, branch=repo_in.default_branch) as cloner:
             await asyncio.to_thread(cloner.get_repo_path)
     except Exception as e:
         raise HTTPException(

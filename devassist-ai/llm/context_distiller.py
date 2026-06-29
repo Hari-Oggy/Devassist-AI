@@ -233,24 +233,22 @@ class ContextDistiller:
         self, raw_output: str, llm_response: LLMResponse, elapsed: float
     ) -> DistillationResult:
         """Parse the LLM's distillation output into a structured DistillationResult."""
-        # Strip markdown code fences if present
-        cleaned = re.sub(r"```(?:json)?\s*", "", raw_output)
-        cleaned = re.sub(r"```\s*$", "", cleaned.strip()).strip()
-
+        cleaned = raw_output.strip()
+        # Remove markdown fences
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r"```\s*$", "", cleaned, flags=re.MULTILINE)
+        
+        # Extract outermost JSON object to bypass conversational filler
+        first_brace = cleaned.find('{')
+        last_brace = cleaned.rfind('}')
+        if first_brace != -1 and last_brace != -1 and last_brace >= first_brace:
+            cleaned = cleaned[first_brace:last_brace+1]
+            
         try:
             parsed = json.loads(cleaned)
         except json.JSONDecodeError:
-            # Try to extract JSON from surrounding text
-            match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-            if match:
-                try:
-                    parsed = json.loads(match.group(0))
-                except json.JSONDecodeError:
-                    logger.warning("Failed to parse distillation JSON output")
-                    return self._fallback_distillation("", "")
-            else:
-                logger.warning("No JSON found in distillation output")
-                return self._fallback_distillation("", "")
+            logger.warning("Failed to parse distillation JSON output")
+            return self._fallback_distillation("", "")
 
         # Validate and normalize fields
         valid_change_types = {"refactor", "feature", "bugfix", "config", "test", "mixed"}

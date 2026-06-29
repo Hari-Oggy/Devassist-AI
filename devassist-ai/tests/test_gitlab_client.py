@@ -244,7 +244,8 @@ class TestSSEManager:
         assert m.active_subscriptions == {}
 
     @pytest.mark.asyncio
-    async def test_publish_no_subscribers(self):
+    @patch('api.sse._get_redis', return_value=None)
+    async def test_publish_no_subscribers(self, mock_get_redis):
         from api.sse import SSEManager
         m = SSEManager()
         sent = await m.publish(1, "review_started", "hello")
@@ -273,14 +274,19 @@ class TestSSEManager:
         assert any("review_completed" in r for r in received)
 
     @pytest.mark.asyncio
-    async def test_total_clients_tracked(self):
+    @patch('api.sse._get_redis', return_value=None)
+    async def test_total_clients_tracked(self, mock_get_redis):
         from api.sse import SSEManager
         import asyncio
         m = SSEManager()
 
         async def consume():
-            async for _ in m.subscribe(review_id=10, timeout_seconds=0.5):
-                break
+            gen = m.subscribe(review_id=10, timeout_seconds=0.5)
+            await gen.__anext__() # get the connected event
+            try:
+                await gen.__anext__() # blocks on _subscribe_inprocess
+            except StopAsyncIteration:
+                pass
 
         task = asyncio.create_task(consume())
         await asyncio.sleep(0.05)

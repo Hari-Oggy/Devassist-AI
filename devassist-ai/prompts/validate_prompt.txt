@@ -96,7 +96,7 @@ Remove (mark is_valid: false) any finding that matches ANY of these:
 
 ## OUTPUT FORMAT
 
-Return a JSON array of validation objects. No markdown code fences. No explanation before or after the JSON. No conversational text. One object per finding in the input.
+Return ONLY a valid JSON array of validation objects. You MUST NOT include any markdown formatting, no ` ```json ` fences, and absolutely no conversational filler before or after the JSON. One object per finding in the input.
 
 [
   {

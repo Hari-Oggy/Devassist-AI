@@ -1,0 +1,27 @@
+review:
+  mode: ensemble
+  skip_files:
+    - "*.lock"
+    - "uv.lock"
+    - "requirements.lock"
+    - ".env*"
+    - "frontend/.next/"
+    - "frontend/node_modules/"
+    - ".venv/"
+  focus_areas:
+    - security
+    - architecture
+    - maintainability
+  language_hints:
+    - python
+    - typescript
+    - javascript
+  max_findings_per_file: 30
+  skip_draft_prs: false
+
+custom_rules:
+  - "Always use the custom core.logger instead of print() or standard logging."
+  - "FastAPI route handlers should be async."
+  - "Avoid committing any sensitive credentials or PAT tokens."
+  - "Frontend components must use Tailwind CSS for styling instead of inline styles."
+  - "AgenticExecutor and DockerSandbox scripts must maintain strict security and never mount the host network."

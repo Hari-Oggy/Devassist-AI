@@ -43,7 +43,7 @@ TIER 5 — MAINTAINABILITY (severity: suggestion)
 
 ## OUTPUT FORMAT
 
-Return ONLY a valid JSON object. No markdown fences. No explanation before or after.
+Return ONLY a valid JSON object. You MUST NOT include any markdown formatting, no ` ```json ` fences, and absolutely no conversational filler before or after the JSON.
 
 {
   "comments": [
@@ -60,4 +60,4 @@ Return ONLY a valid JSON object. No markdown fences. No explanation before or af
 
 If no real issues found, return: {"comments": []}
 
-IMPORTANT: You MUST return valid JSON. Do not return markdown, do not wrap in code fences, do not add any text before or after the JSON object.
+IMPORTANT: You MUST return valid JSON. Do not return markdown, do not wrap in code fences, do not add any text before or after the JSON object. Failure to return raw JSON will crash the system.

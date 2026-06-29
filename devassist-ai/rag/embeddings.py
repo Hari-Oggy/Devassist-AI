@@ -15,6 +15,8 @@ from rag.rag_config import RAGSettings
 
 logger = get_logger("rag.embeddings")
 
+_cached_embedding_model = None
+
 
 def get_embedding_model(settings: Optional[RAGSettings] = None) -> Any:
     """Return an initialized embedding model based on RAGSettings.
@@ -35,19 +37,26 @@ def get_embedding_model(settings: Optional[RAGSettings] = None) -> Any:
     Raises:
         RuntimeError: If no embedding model can be loaded.
     """
+    global _cached_embedding_model
+    if _cached_embedding_model is not None:
+        return _cached_embedding_model
+
     from rag.rag_config import get_rag_settings
     cfg = settings or get_rag_settings()
     provider = cfg.RAG_EMBEDDING_PROVIDER.lower()
     model_name = cfg.RAG_EMBEDDING_MODEL
 
     if provider == "openai":
-        return _load_openai_embeddings(model_name)
+        _cached_embedding_model = _load_openai_embeddings(model_name)
+        return _cached_embedding_model
     if provider == "huggingface":
-        return _load_huggingface_embeddings(model_name)
+        _cached_embedding_model = _load_huggingface_embeddings(model_name)
+        return _cached_embedding_model
 
     # Auto-select based on what's installed
     try:
-        return _load_huggingface_embeddings(model_name)
+        _cached_embedding_model = _load_huggingface_embeddings(model_name)
+        return _cached_embedding_model
     except ImportError:
         pass
 

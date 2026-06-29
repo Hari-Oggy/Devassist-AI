@@ -44,6 +44,10 @@ _SKIP_DIRS: frozenset[str] = frozenset(
         "migrations",
         ".mypy_cache",
         ".pytest_cache",
+        "target",    # Rust, Java
+        ".gradle",   # Java/Android
+        ".next",     # Next.js
+        "out",       # Various JS/TS outputs
     }
 )
 
@@ -198,9 +202,11 @@ class CodeGraphBuilder:
         self,
         repo_path: str,
         parser_factory: ParserFactory | None = None,
+        skip_patterns: list[str] | None = None,
     ) -> None:
         self.repo_path: str = os.path.abspath(repo_path)
         self._parser_factory: ParserFactory | None = parser_factory
+        self.skip_patterns: list[str] = skip_patterns or []
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -223,8 +229,8 @@ class CodeGraphBuilder:
     def _should_skip(self, path: str) -> bool:
         """Determine whether a path component should be excluded from scanning.
 
-        Skips directories in :data:`_SKIP_DIRS` and files exceeding
-        :data:`_MAX_FILE_BYTES`.
+        Skips directories in :data:`_SKIP_DIRS`, patterns in `self.skip_patterns`,
+        and files exceeding :data:`_MAX_FILE_BYTES`.
 
         Args:
             path: Absolute filesystem path to a file or directory.
@@ -235,6 +241,16 @@ class CodeGraphBuilder:
         parts = set(path.replace("\\", "/").split("/"))
         if parts & _SKIP_DIRS:
             return True
+            
+        if self.skip_patterns:
+            import fnmatch
+            rel_path = os.path.relpath(path, self.repo_path).replace("\\", "/")
+            # Also check base name (so "*.lock" works for "foo/bar.lock")
+            base_name = os.path.basename(path)
+            for pattern in self.skip_patterns:
+                if fnmatch.fnmatch(rel_path, pattern) or fnmatch.fnmatch(base_name, pattern):
+                    return True
+
         if os.path.isfile(path) and os.path.getsize(path) > _MAX_FILE_BYTES:
             logger.info(
                 "Skipping oversized file",

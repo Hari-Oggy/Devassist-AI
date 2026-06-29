@@ -485,20 +485,26 @@ class HybridRetriever:
         """Apply cross-encoder reranking if enabled, otherwise pass through."""
         if not self._reranker or not results:
             return results
-        docs = [{"content": r.chunk.content, "source_path": r.chunk.file_path} for r in results]
+        docs = [
+            {
+                "content": r.chunk.content, 
+                "source_path": r.chunk.file_path,
+                "original_index": i
+            } 
+            for i, r in enumerate(results)
+        ]
         reranked_docs = self._reranker.rerank(query, docs, top_k=len(results))
-        # Re-order results to match reranked order
-        path_to_result = {r.chunk.file_path + str(r.chunk.start_line): r for r in results}
+        
         reranked: list[RetrievedChunk] = []
+        seen = set()
+        
         for doc in reranked_docs:
-            key = doc["source_path"]
-            # Match by source_path prefix since reranker docs don't carry start_line
-            for r in results:
-                if r.chunk.file_path == key and r not in reranked:
-                    reranked.append(r)
-                    break
-        # Append any unmatched results at the end
-        for r in results:
-            if r not in reranked:
+            idx = doc["original_index"]
+            reranked.append(results[idx])
+            seen.add(idx)
+            
+        for i, r in enumerate(results):
+            if i not in seen:
                 reranked.append(r)
+                
         return reranked

@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { ReviewProgress } from "@/components/ReviewProgress";
 import { FindingCard } from "@/components/FindingCard";
+import { DocumentationTab } from "@/components/DocumentationTab";
+import { BlastRadiusGraph } from "@/components/BlastRadiusGraph";
 import {
   ArrowLeft,
   GitBranch,
@@ -11,28 +13,85 @@ import {
   GitPullRequest,
   Calendar,
   Clock,
-  CheckCircle2,
   FileCode2,
   Activity,
-  ChevronRight,
   ShieldAlert,
   XCircle,
+  CheckCircle2,
+  ChevronRight,
+  Network,
+  AlertTriangle,
+  FileWarning,
 } from "lucide-react";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
-import { readJson } from "@/lib/api";
-import { GlassCard, LoadingSpinner, StatusBadge } from "@/components/ui/shared";
+
+// ── Shared UI primitives ────────────────────────────────────────────────
+
+function GlassCard({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`rounded-2xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-sm p-6 ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+function LoadingSpinner({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
+  const sizes = { sm: "h-4 w-4", md: "h-8 w-8", lg: "h-12 w-12" };
+  return (
+    <div
+      className={`${sizes[size]} animate-spin rounded-full border-2 border-violet-500/20 border-t-violet-500`}
+    />
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const s = status?.toLowerCase();
+  const map: Record<string, string> = {
+    completed: "bg-emerald-500/10 border-emerald-500/20 text-emerald-400",
+    running: "bg-violet-500/10 border-violet-500/20 text-violet-400",
+    pending: "bg-amber-500/10 border-amber-500/20 text-amber-400",
+    failed: "bg-rose-500/10 border-rose-500/20 text-rose-400",
+    skipped: "bg-white/5 border-white/10 text-white/30",
+  };
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-[11px] font-bold uppercase tracking-wider ${
+        map[s] ?? map.skipped
+      }`}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+      {status}
+    </span>
+  );
+}
+
+// ── Tabs ────────────────────────────────────────────────────────────────
+
+type Tab = "findings" | "impact" | "documentation";
+
+// ── Types ───────────────────────────────────────────────────────────────
 
 interface Review {
   id: number;
   status: string;
-  summary: string;
-  commit_sha: string;
+  summary?: string;
+  commit_sha?: string;
   created_at: string;
-  pr_title: string;
-  pr_number: number;
-  repo_name: string;
-  provider: string;
+  completed_at?: string;
+  pr_title?: string;
+  pr_number?: number;
+  repo_name?: string;
+  provider?: string;
+  total_findings?: number;
 }
 
 interface Finding {
@@ -47,13 +106,213 @@ interface Finding {
   is_suppressed: boolean;
 }
 
+interface ImpactReport {
+  affected_files: string[];
+  blast_radius: number;
+  changed_files: string[];
+  callers: Record<string, string[]>;
+}
+
+// ── readJson helper ─────────────────────────────────────────────────────
+
+async function readJson<T>(res: Response): Promise<T> {
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+// ── Impact Analysis Tab ─────────────────────────────────────────────────
+
+function ImpactTab({
+  reviewId,
+  isCompleted,
+}: {
+  reviewId: number;
+  isCompleted: boolean;
+}) {
+  const [impact, setImpact] = useState<ImpactReport | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    if (!isCompleted) {
+      setLoading(false);
+      return;
+    }
+    fetch(`/api/v3/reviews/${reviewId}/impact`)
+      .then((res) => readJson<{ affected_files: string[]; blast_radius: number; changed_files: string[]; callers: Record<string, string[]> }>(res))
+      .then((data) => {
+        setImpact(data);
+        setLoading(false);
+      })
+      .catch(() => {
+        setError(true);
+        setLoading(false);
+      });
+  }, [reviewId, isCompleted]);
+
+  if (!isCompleted) {
+    return (
+      <GlassCard className="text-center py-12">
+        <Network className="h-12 w-12 mx-auto mb-4 text-violet-400/40" />
+        <p className="text-white/40 font-medium">
+          Impact analysis will be available once the review completes.
+        </p>
+      </GlassCard>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <LoadingSpinner size="lg" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <GlassCard className="text-center py-12">
+        <XCircle className="h-10 w-10 mx-auto mb-4 text-rose-400/50" />
+        <p className="text-white/40 font-medium">Could not load impact data.</p>
+      </GlassCard>
+    );
+  }
+
+  const affectedFiles = impact?.affected_files ?? [];
+  const changedFiles = impact?.changed_files ?? [];
+  const callers = impact?.callers ?? {};
+  const blastRadius = impact?.blast_radius ?? 0;
+
+  const hasData =
+    affectedFiles.length > 0 || changedFiles.length > 0 || Object.keys(callers).length > 0;
+
+  if (!hasData) {
+    return (
+      <GlassCard className="text-center py-12">
+        <CheckCircle2 className="h-12 w-12 mx-auto mb-4 text-emerald-500/50" />
+        <p className="font-bold text-white text-[16px]">No blast radius detected</p>
+        <p className="text-[13px] text-white/40 mt-1">
+          The changed files don&apos;t have indirect effects on other parts of the codebase.
+        </p>
+      </GlassCard>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Summary card */}
+      <div className="grid grid-cols-2 gap-5">
+        <GlassCard className="flex items-center gap-4">
+          <div className="p-3 rounded-xl border bg-orange-500/10 border-orange-500/20 text-orange-400 shrink-0">
+            <Network className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="text-[12px] font-medium text-white/40">Blast Radius</p>
+            <p className="text-[20px] font-bold text-white leading-none mt-0.5">
+              {blastRadius || affectedFiles.length}
+              <span className="text-[13px] font-normal text-white/40 ml-1">files</span>
+            </p>
+          </div>
+        </GlassCard>
+        <GlassCard className="flex items-center gap-4">
+          <div className="p-3 rounded-xl border bg-violet-500/10 border-violet-500/20 text-violet-400 shrink-0">
+            <FileWarning className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="text-[12px] font-medium text-white/40">Directly Changed</p>
+            <p className="text-[20px] font-bold text-white leading-none mt-0.5">
+              {changedFiles.length}
+              <span className="text-[13px] font-normal text-white/40 ml-1">files</span>
+            </p>
+          </div>
+        </GlassCard>
+      </div>
+
+      {/* Interactive ReactFlow Graph */}
+      <BlastRadiusGraph 
+        changedFiles={changedFiles} 
+        affectedFiles={affectedFiles} 
+        callers={callers} 
+      />
+
+      {/* Affected files */}
+      {affectedFiles.length > 0 && (
+        <GlassCard>
+          <div className="flex items-center gap-3 mb-5">
+            <div className="p-2.5 rounded-xl bg-orange-500/10 border border-orange-500/20">
+              <AlertTriangle className="h-4 w-4 text-orange-400" />
+            </div>
+            <div>
+              <h3 className="text-[15px] font-bold text-white">Indirectly Affected Files</h3>
+              <p className="text-[12px] text-white/40 mt-0.5">
+                These files may break if the changed code is incorrect
+              </p>
+            </div>
+          </div>
+          <ul className="space-y-2">
+            {affectedFiles.map((file) => (
+              <li
+                key={file}
+                className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.02] border border-white/[0.05] hover:border-orange-500/20 hover:bg-orange-500/5 transition-all duration-150"
+              >
+                <FileCode2 className="h-4 w-4 text-orange-400/60 shrink-0" />
+                <code className="text-[13px] font-mono text-white/70">{file}</code>
+              </li>
+            ))}
+          </ul>
+        </GlassCard>
+      )}
+
+      {/* Callers / symbol dependencies */}
+      {Object.keys(callers).length > 0 && (
+        <GlassCard>
+          <div className="flex items-center gap-3 mb-5">
+            <div className="p-2.5 rounded-xl bg-violet-500/10 border border-violet-500/20">
+              <Network className="h-4 w-4 text-violet-400" />
+            </div>
+            <div>
+              <h3 className="text-[15px] font-bold text-white">Symbol Dependency Map</h3>
+              <p className="text-[12px] text-white/40 mt-0.5">
+                Functions / classes that depend on your changed symbols
+              </p>
+            </div>
+          </div>
+          <div className="space-y-4">
+            {Object.entries(callers).map(([symbol, callerList]) => (
+              <div
+                key={symbol}
+                className="rounded-xl border border-white/[0.06] bg-white/[0.01] overflow-hidden"
+              >
+                <div className="px-4 py-3 border-b border-white/[0.06] bg-white/[0.02]">
+                  <code className="text-[13px] font-mono font-bold text-violet-300">{symbol}</code>
+                </div>
+                <ul className="p-3 space-y-1.5">
+                  {(callerList as string[]).map((caller) => (
+                    <li key={caller} className="flex items-center gap-2">
+                      <ChevronRight className="h-3.5 w-3.5 text-white/20 shrink-0" />
+                      <code className="text-[12px] font-mono text-white/55">{caller}</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </GlassCard>
+      )}
+    </div>
+  );
+}
+
+// ── Main page ───────────────────────────────────────────────────────────
+
 export default function ReviewDetailPage() {
-  const params = useParams();
-  const reviewId = parseInt(params.id as string, 10);
+  const { id } = useParams<{ id: string }>();
+  const reviewId = parseInt(id, 10);
 
   const [review, setReview] = useState<Review | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<Tab>("findings");
 
   const fetchFindings = () => {
     fetch(`/api/v3/reviews/${reviewId}/findings`)
@@ -104,6 +363,9 @@ export default function ReviewDetailPage() {
     );
   }
 
+  const isCompleted = review.status?.toLowerCase() === "completed";
+  const isFailed = review.status?.toLowerCase() === "failed";
+
   return (
     <div className="mx-auto max-w-[1200px] p-8 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
       {/* Breadcrumb */}
@@ -122,7 +384,11 @@ export default function ReviewDetailPage() {
       <div className="space-y-4">
         <div className="flex items-center gap-3 flex-wrap text-[12px] font-semibold text-white/40">
           <span className="flex items-center gap-1.5 bg-white/[0.04] border border-white/[0.07] px-3 py-1.5 rounded-lg text-white/60">
-            {review.provider === "github" ? <GitBranch className="h-3.5 w-3.5" /> : <Code2 className="h-3.5 w-3.5" />}
+            {review.provider === "github" ? (
+              <GitBranch className="h-3.5 w-3.5" />
+            ) : (
+              <Code2 className="h-3.5 w-3.5" />
+            )}
             {review.repo_name}
           </span>
           <span className="flex items-center gap-1.5 bg-white/[0.04] border border-white/[0.07] px-3 py-1.5 rounded-lg">
@@ -162,31 +428,28 @@ export default function ReviewDetailPage() {
       <div className="grid grid-cols-3 gap-5">
         {[
           {
-            label: "Files Changed",
-            value: "—",
-            icon: <FileCode2 className="h-5 w-5" />,
-            accent: "violet",
-            bg: "bg-violet-500/10",
-            border: "border-violet-500/20",
-            text: "text-violet-400",
-          },
-          {
-            label: "Lines Edited",
-            value: "—",
-            icon: <Activity className="h-5 w-5" />,
-            accent: "cyan",
-            bg: "bg-cyan-500/10",
-            border: "border-cyan-500/20",
-            text: "text-cyan-400",
-          },
-          {
-            label: "Findings",
-            value: findings.length,
+            label: "Total Findings",
+            value: review.total_findings ?? findings.length,
             icon: <ShieldAlert className="h-5 w-5" />,
-            accent: findings.length > 0 ? "rose" : "emerald",
             bg: findings.length > 0 ? "bg-rose-500/10" : "bg-emerald-500/10",
             border: findings.length > 0 ? "border-rose-500/20" : "border-emerald-500/20",
             text: findings.length > 0 ? "text-rose-400" : "text-emerald-400",
+          },
+          {
+            label: "Active Findings",
+            value: findings.filter((f) => !f.is_suppressed).length,
+            icon: <AlertTriangle className="h-5 w-5" />,
+            bg: "bg-amber-500/10",
+            border: "border-amber-500/20",
+            text: "text-amber-400",
+          },
+          {
+            label: "Status",
+            value: review.status,
+            icon: <Activity className="h-5 w-5" />,
+            bg: isCompleted ? "bg-emerald-500/10" : isFailed ? "bg-rose-500/10" : "bg-violet-500/10",
+            border: isCompleted ? "border-emerald-500/20" : isFailed ? "border-rose-500/20" : "border-violet-500/20",
+            text: isCompleted ? "text-emerald-400" : isFailed ? "text-rose-400" : "text-violet-400",
           },
         ].map((stat) => (
           <GlassCard key={stat.label} className="flex items-center gap-4">
@@ -195,7 +458,9 @@ export default function ReviewDetailPage() {
             </div>
             <div>
               <p className="text-[12px] font-medium text-white/40">{stat.label}</p>
-              <p className="text-[20px] font-bold text-white leading-none mt-0.5">{stat.value}</p>
+              <p className="text-[20px] font-bold text-white leading-none mt-0.5 capitalize">
+                {stat.value}
+              </p>
             </div>
           </GlassCard>
         ))}
@@ -204,17 +469,16 @@ export default function ReviewDetailPage() {
       {/* Content area */}
       <div className="space-y-6">
         {/* Pipeline Progress (SSE) */}
-        {review.status?.toLowerCase() !== "completed" &&
-          review.status?.toLowerCase() !== "failed" && (
-            <ReviewProgress
-              reviewId={reviewId}
-              initialStatus={review.status}
-              onComplete={() => fetchReviewData()}
-            />
-          )}
+        {!isCompleted && !isFailed && (
+          <ReviewProgress
+            reviewId={reviewId}
+            initialStatus={review.status}
+            onComplete={() => fetchReviewData()}
+          />
+        )}
 
         {/* Summary */}
-        {review.status?.toLowerCase() === "completed" && (
+        {isCompleted && (
           <GlassCard className="relative overflow-hidden">
             <div className="absolute top-0 right-0 w-64 h-full bg-gradient-to-l from-violet-500/5 to-transparent pointer-events-none" />
             <h3 className="text-[15px] font-bold text-white mb-4">Review Summary</h3>
@@ -225,7 +489,7 @@ export default function ReviewDetailPage() {
         )}
 
         {/* Failed state */}
-        {review.status?.toLowerCase() === "failed" && (
+        {isFailed && (
           <div className="flex items-start gap-4 p-6 rounded-2xl bg-rose-500/5 border border-rose-500/20">
             <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 shrink-0">
               <XCircle className="h-6 w-6 text-rose-400" />
@@ -239,28 +503,65 @@ export default function ReviewDetailPage() {
           </div>
         )}
 
-        {/* Findings List */}
-        {review.status?.toLowerCase() === "completed" && (
-          <div className="space-y-5">
-            <div className="flex items-center justify-between border-b border-white/[0.06] pb-4">
-              <h2 className="text-[17px] font-bold text-white">
-                Findings{" "}
-                <span className="text-white/30 font-normal text-[15px]">({findings.length})</span>
-              </h2>
+        {/* Tabs — only shown after completion */}
+        {isCompleted && (
+          <div className="space-y-6">
+            {/* Tab header */}
+            <div className="flex gap-1 border-b border-white/[0.06]">
+              {(
+                [
+                  { id: "findings", label: `Findings (${findings.length})`, icon: <ShieldAlert className="h-4 w-4" /> },
+                  { id: "impact", label: "Impact Analysis", icon: <Network className="h-4 w-4" /> },
+                  { id: "documentation", label: "Documentation", icon: <FileCode2 className="h-4 w-4" /> },
+                ] as { id: Tab; label: string; icon: React.ReactNode }[]
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  id={`tab-${tab.id}`}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center gap-2 px-4 py-3 text-[13px] font-semibold border-b-2 -mb-px transition-all duration-150 ${
+                    activeTab === tab.id
+                      ? "border-violet-500 text-violet-400"
+                      : "border-transparent text-white/40 hover:text-white/70"
+                  }`}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              ))}
             </div>
 
-            {findings.length === 0 ? (
-              <div className="text-center py-16 rounded-2xl border border-white/[0.07] border-dashed bg-white/[0.01]">
-                <CheckCircle2 className="h-12 w-12 mx-auto mb-4 text-emerald-500/60" />
-                <p className="font-bold text-white text-[16px]">No issues found!</p>
-                <p className="text-[13px] text-white/40 mt-1">The code looks great and follows best practices.</p>
+            {/* Tab content */}
+            {activeTab === "findings" && (
+              <div className="space-y-5">
+                {findings.length === 0 ? (
+                  <div className="text-center py-16 rounded-2xl border border-white/[0.07] border-dashed bg-white/[0.01]">
+                    <CheckCircle2 className="h-12 w-12 mx-auto mb-4 text-emerald-500/60" />
+                    <p className="font-bold text-white text-[16px]">No issues found!</p>
+                    <p className="text-[13px] text-white/40 mt-1">
+                      The code looks great and follows best practices.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-5">
+                    {findings.map((finding) => (
+                      <FindingCard
+                        key={finding.id}
+                        finding={finding}
+                        reviewId={reviewId}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
-            ) : (
-              <div className="flex flex-col gap-5">
-                {findings.map((finding) => (
-                  <FindingCard key={finding.id} finding={finding} />
-                ))}
-              </div>
+            )}
+
+            {activeTab === "impact" && (
+              <ImpactTab reviewId={reviewId} isCompleted={isCompleted} />
+            )}
+
+            {activeTab === "documentation" && (
+              <DocumentationTab reviewId={reviewId} isCompleted={isCompleted} />
             )}
           </div>
         )}

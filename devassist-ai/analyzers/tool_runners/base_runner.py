@@ -68,6 +68,9 @@ class BaseRunner(ABC):
 
     # ── Shared protected helpers ────────────────────────────────────────
 
+    def __init__(self):
+        self.sandbox = None
+
     def _run_command(
         self,
         cmd: list[str],
@@ -85,11 +88,18 @@ class BaseRunner(ABC):
             cwd: Optional working directory for the subprocess.
 
         Returns:
-            Tuple ``(exit_code, stdout, stderr)``.  exit_code is:
-            - ``-1`` on timeout
-            - ``-2`` when the binary is missing (not installed)
-            - ``-3`` on any other unexpected error
+            Tuple ``(exit_code, stdout, stderr)``.
         """
+        # --- Secure execution path using DockerSandbox ---
+        if self.sandbox:
+            res = self.sandbox.run_command(
+                command=cmd,
+                repo_path=cwd if cwd else ".",
+                timeout=timeout,
+            )
+            return res.exit_code, res.stdout, res.stderr
+        # -----------------------------------------------
+
         try:
             result = subprocess.run(
                 cmd,

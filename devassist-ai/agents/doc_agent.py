@@ -3,7 +3,6 @@ Documentation Agent — uses the LLM Router (never provider APIs directly).
 """
 
 import os
-import ast
 import json
 from pathlib import Path
 
@@ -27,54 +26,18 @@ class DocumentationAgent:
         with open(file_path, "r", encoding="utf-8") as f:
             return f.read()
 
-    def _has_docstring(self, node) -> bool:
-        return ast.get_docstring(node) is not None
-
-    def _find_undocumented(self, source_code: str) -> list[dict]:
-        try:
-            tree = ast.parse(source_code)
-        except SyntaxError:
-            return []
-
-        undocumented = []
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                if not self._has_docstring(node):
-                    name = node.name
-                    if name.startswith("_") and len(node.body) < 5:
-                        continue
-                    node_type = "class" if isinstance(node, ast.ClassDef) else "function"
-                    snippet = source_code.splitlines()[node.lineno - 1:node.lineno + 9]
-                    undocumented.append({
-                        "name": name,
-                        "type": node_type,
-                        "lineno": node.lineno,
-                        "source_snippet": "\n".join(snippet),
-                    })
-        return undocumented
-
     def generate_docstrings(self, file_path: str) -> dict:
         source_code = self._read_file(file_path)
-        undocumented = self._find_undocumented(source_code)
-
-        if not undocumented:
-            return {
-                "file": file_path,
-                "updated_code": source_code,
-                "changes": 0,
-                "message": "All functions already documented",
-                "items_documented": [],
-            }
+        ext = os.path.splitext(file_path)[1].lower()
 
         request_id = generate_request_id()
         system_prompt = load_prompt("doc_prompt")
-        items_json = json.dumps([{"name": i["name"], "type": i["type"], "snippet": i["source_snippet"]} for i in undocumented])
 
         llm_request = LLMRequest(
             task_type="documentation",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"File: {file_path}\n\nUndocumented items: {items_json}\n\nFull source:\n{source_code}\n\nReturn the complete updated file."},
+                {"role": "user", "content": f"File: {file_path}\nExtension: {ext}\n\nFind all undocumented or poorly documented public functions, methods, and classes in this file. Add proper documentation comments to them (e.g., JSDoc for TS, Javadoc for Java, Google-style for Python, Rustdoc for Rust). Do not document private/internal helpers unless they are complex.\n\nFull source:\n{source_code}\n\nReturn ONLY the complete updated file."},
             ],
             temperature=self.settings.DOC_TEMPERATURE,
             metadata={"request_id": request_id, "file": file_path},
@@ -86,22 +49,24 @@ class DocumentationAgent:
             logger.error(f"LLM call failed for docstrings: {response.error}")
             return {"file": file_path, "updated_code": source_code, "changes": 0, "error": response.error, "items_documented": []}
 
-        updated_code = response.content
-        # Strip markdown code fences if present
-        if updated_code.startswith("```python"):
-            updated_code = updated_code[9:]
+        updated_code = response.content.strip()
+        
+        # Strip markdown code fences if present (e.g., ```python ... ```)
         if updated_code.startswith("```"):
-            updated_code = updated_code[3:]
-        if updated_code.endswith("```"):
-            updated_code = updated_code[:-3]
-        updated_code = updated_code.strip()
+            lines = updated_code.splitlines()
+            if len(lines) > 1 and lines[0].startswith("```"):
+                lines = lines[1:]
+            if len(lines) > 1 and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            updated_code = "\n".join(lines).strip()
 
-        names = [item["name"] for item in undocumented]
+        changes = 1 if updated_code != source_code.strip() else 0
+
         return {
             "file": file_path,
             "updated_code": updated_code,
-            "changes": len(undocumented),
-            "items_documented": names,
+            "changes": changes,
+            "items_documented": ["Auto-detected items"] if changes else [],
             "model_used": response.model,
             "provider_used": response.provider,
         }
@@ -114,7 +79,7 @@ class DocumentationAgent:
             task_type="documentation",
             messages=[
                 {"role": "system", "content": "You are a technical documentation writer."},
-                {"role": "user", "content": f"Generate clean Markdown documentation for this Python module. Include: module overview, all public functions/classes with their parameters and return types, and 2-3 usage examples. Format nicely with headers.\n\nModule: {file_path}\n\n{code}"},
+                {"role": "user", "content": f"Generate clean Markdown documentation for this source code module. Include: module overview, all public functions/classes with their parameters and return types, and 2-3 usage examples. Format nicely with headers.\n\nModule: {file_path}\n\n{code}"},
             ],
             temperature=self.settings.DOC_TEMPERATURE,
             metadata={"request_id": request_id, "file": file_path},
@@ -149,5 +114,5 @@ class DocumentationAgent:
                 "success": True,
             }
         except Exception as e:
-            logger.error(f"process_file failed: {e}")
+            logger.error(f"Failed to process {file_path}: {e}")
             return {"file": file_path, "success": False, "error": str(e)}

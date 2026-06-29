@@ -10,6 +10,7 @@ from taskqueue.celery_app import celery_app
 from core.config import get_settings
 from core.pipeline_config import get_pipeline_settings
 from core.logger import get_logger
+from core.repo_config import load_repo_config
 from models.database import get_db_session_context
 from models.repositories import RepositoryRepo, PullRequestRepo, ReviewRepo, FindingRepo, ReviewEventRepo
 from models.entities import ProviderType, EventType, ReviewStatus
@@ -83,6 +84,9 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                 provider_id=project_id,
             )
             
+            active_repo_id = repo.id
+            active_repo_settings = repo.settings or {}
+            
             # 2. Upsert Pull Request
             pr = await PullRequestRepo.upsert(
                 session=session,
@@ -130,9 +134,17 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
             else:
                 repo_url = f"{scheme}://{host}/{project_path}.git"
         else:
-            github_token = settings.GITHUB_TOKEN or os.getenv("GITHUB_TOKEN")
-            if github_token and github_token != "your_github_personal_access_token_here":
-                repo_url = f"https://x-access-token:{github_token}@github.com/{project_path}.git"
+            installation_id = context.get("installation_id")
+            from agents.tools.github_tool import get_github_client
+            try:
+                github_client = get_github_client(repo_name=project_path, installation_id=installation_id)
+            except Exception as e:
+                logger.error(f"Failed to init GitHub client for repo {project_path}: {e}")
+                raise
+                
+            clone_token = github_client.get_clone_token()
+            if clone_token and clone_token != "your_github_personal_access_token_here":
+                repo_url = f"https://x-access-token:{clone_token}@github.com/{project_path}.git"
             else:
                 repo_url = f"https://github.com/{project_path}.git"
 
@@ -175,10 +187,7 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                         "deletions": del_lines,
                     })
         else:
-            # Use GitHubClient instead of directly instantiating PyGithub
-            from agents.tools.github_tool import get_github_client
             try:
-                github_client = get_github_client(repo_name=project_path)
                 gh_repo = github_client.repo
                 pr_obj = gh_repo.get_pull(int(mr_iid))
             except Exception as e:
@@ -227,7 +236,26 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
 
         with RepoCloner(repo_url=repo_url) as cloner:
             repo_path = cloner.get_repo_path()
-            graph = CodeGraphBuilder(repo_path).build()
+            
+            # Load and apply per-repo .devassist.yml config
+            repo_config = load_repo_config(repo_path)
+            pipeline.mode = repo_config.review.mode
+            
+            if repo_config.has_custom_rules:
+                system_prompt += f"\n\n{repo_config.format_custom_rules_prompt()}"
+                
+            if repo_config.review.focus_areas:
+                system_prompt += "\n\nFocus Areas:\n" + "\n".join(f"- {fa}" for fa in repo_config.review.focus_areas)
+                
+            if repo_config.review.language_hints:
+                system_prompt += "\n\nLanguage Hints:\n" + "\n".join(f"- {lh}" for lh in repo_config.review.language_hints)
+                
+            reviewable_files = [f for f in reviewable_files if not repo_config.should_skip_file(f["filename"])]
+            
+            graph = CodeGraphBuilder(
+                repo_path,
+                skip_patterns=repo_config.review.skip_files
+            ).build()
             analyzer = ImpactAnalyzer(graph)
             changed_filenames = [f["filename"] for f in reviewable_files]
             report = analyzer.analyze(changed_files=changed_filenames, pr_number=int(mr_iid))
@@ -238,10 +266,13 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
             logger.info("Running StaticAnalyzer on changed files...")
             try:
                 static_analyzer = StaticAnalyzer(max_workers=4)
+                
+                # Use the first language hint if available, else default to "multi"
+                lang = repo_config.review.language_hints[0] if repo_config.review.language_hints else "multi"
                 sandbox_result = static_analyzer.analyze(
                     target_path=repo_path,
                     file_paths=changed_filenames,
-                    language="multi"
+                    language=lang
                 )
                 findings_map = sandbox_result.findings_by_file()
                 logger.info(f"StaticAnalyzer completed with {len(sandbox_result.all_findings)} findings.")
@@ -249,33 +280,87 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                 logger.warning(f"StaticAnalyzer failed: {e}")
                 findings_map = {}
             # -----------------------
-
-            # Index codebase for RAG
+            
+            # --- Agentic Executor Analysis ---
+            from analyzers.agentic_executor import AgenticExecutor
+            logger.info("Running AgenticExecutor dynamic analysis...")
             try:
-                from rag.rag_config import get_rag_settings
-                rag_cfg = get_rag_settings()
-                repo_files = []
-                for root, dirs, files in os.walk(repo_path):
-                    dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules', '__pycache__', '.venv', 'dist', 'build', '.next')]
-                    for file in files:
-                        ext = os.path.splitext(file)[1].lower()
-                        if ext in rag_cfg.code_extensions:
-                            file_path = os.path.join(root, file)
-                            if os.path.getsize(file_path) <= rag_cfg.RAG_MAX_FILE_BYTES:
-                                try:
-                                    with open(file_path, 'r', encoding='utf-8') as f:
-                                        repo_files.append({"file_path": file_path, "content": f.read()})
-                                except Exception:
-                                    pass
-                
-                logger.info(f"Chunking {len(repo_files)} files for RAG...")
-                chunker = ASTChunker()
-                chunks = chunker.chunk_files(repo_files)
-                retriever = HybridRetriever(get_embedding_model())
-                retriever.build(chunks)
-                logger.info("RAG indexing complete")
+                pr_diff = "\n".join(f["patch"] for f in reviewable_files if f.get("patch"))
+                if pr_diff:
+                    executor = AgenticExecutor(script_timeout=30)
+                    agentic_result = executor.execute_analysis(
+                        pr_diff=pr_diff,
+                        repo_path=repo_path,
+                        pr_number=int(mr_iid),
+                        changed_files=changed_filenames,
+                    )
+                    if agentic_result.success and agentic_result.findings:
+                        from analyzers.models import LintFinding, Severity
+                        for f in agentic_result.findings:
+                            fname = f.get("file")
+                            if fname:
+                                sev_str = f.get("severity", "warning").upper()
+                                sev = Severity.WARNING
+                                if sev_str == "ERROR": sev = Severity.ERROR
+                                elif sev_str == "NOTE" or sev_str == "INFO": sev = Severity.NOTE
+                                
+                                lf = LintFinding(
+                                    file_path=fname,
+                                    line=f.get("line", 0),
+                                    message=f"[Agentic] {f.get('message')}",
+                                    severity=sev,
+                                    rule_id="agentic-dynamic",
+                                )
+                                if fname not in findings_map:
+                                    findings_map[fname] = []
+                                findings_map[fname].append(lf)
+                        logger.info(f"AgenticExecutor completed with {len(agentic_result.findings)} dynamic findings.")
             except Exception as e:
-                logger.warning(f"RAG indexing failed: {e}")
+                logger.warning(f"AgenticExecutor failed: {e}")
+            # ---------------------------------
+
+            # --- Persistent RAG Integration ---
+            rag_status = active_repo_settings.get("rag_status", "pending")
+            retriever = HybridRetriever(get_embedding_model())
+            index_loaded = False
+            
+            if rag_status == "ready":
+                index_path = os.path.join("data", "rag_v2", f"repo_{active_repo_id}")
+                try:
+                    if retriever.load(index_path):
+                        index_loaded = True
+                        logger.info(f"Loaded persistent RAG index for repo_id={active_repo_id}")
+                    else:
+                        logger.warning(f"RAG index not found at {index_path} despite 'ready' status.")
+                except Exception as e:
+                    logger.warning(f"Failed to load RAG index: {e}")
+
+            if not index_loaded:
+                logger.info(f"RAG status is '{rag_status}'. Falling back to temporary in-memory index.")
+                try:
+                    from rag.rag_config import get_rag_settings
+                    rag_cfg = get_rag_settings()
+                    repo_files = []
+                    for root, dirs, files in os.walk(repo_path):
+                        dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules', '__pycache__', '.venv', 'dist', 'build', '.next')]
+                        for file in files:
+                            ext = os.path.splitext(file)[1].lower()
+                            if ext in rag_cfg.code_extensions:
+                                file_path = os.path.join(root, file)
+                                if os.path.getsize(file_path) <= rag_cfg.RAG_MAX_FILE_BYTES:
+                                    try:
+                                        with open(file_path, 'r', encoding='utf-8') as f:
+                                            repo_files.append({"file_path": file_path, "content": f.read()})
+                                    except Exception:
+                                        pass
+                    
+                    logger.info(f"Chunking {len(repo_files)} files for temporary RAG...")
+                    chunker = ASTChunker()
+                    chunks = chunker.chunk_files(repo_files)
+                    retriever.build(chunks)
+                    logger.info("Temporary RAG indexing complete")
+                except Exception as e:
+                    logger.warning(f"Temporary RAG indexing failed: {e}")
 
             for file_data in reviewable_files:
                 # Retrieve context from RAG
@@ -389,14 +474,111 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                                     except Exception as e:
                                         logger.warning(f"Failed to post inline comment to {fd['file']}:{fd['line']} (often due to line not in diff hunk): {e}")
 
-                    # Post summary comment
-                    if raw_summary:
-                        formatted_summary = f"### DevAssist-AI Review Summary\n\n**Findings:** {error_count} Errors, {warning_count} Warnings\n\n"
+                    # Post summary comment — CodeRabbit-style
+                    try:
+                        # ── Walkthrough ────────────────────────────────────────
+                        walkthrough_lines = []
+                        for file_data, res in zip(reviewable_files, results):
+                            if res.distillation and res.distillation.summary:
+                                walkthrough_lines.append(
+                                    f"- **`{file_data['filename']}`** — {res.distillation.summary}"
+                                )
+                        walkthrough_section = (
+                            "### 🔍 Walkthrough\n\n"
+                            + ("\n".join(walkthrough_lines) if walkthrough_lines
+                               else f"Reviewed {len(reviewable_files)} file(s). "
+                                    f"Found {len(all_findings)} issue(s) total.")
+                        )
+
+                        # ── Changes table ──────────────────────────────────────
+                        changes_rows = []
+                        for file_data, res in zip(reviewable_files, results):
+                            status_icon = {"added": "🆕", "removed": "🗑️", "renamed": "✏️"}.get(
+                                file_data.get("status", ""), "📝"
+                            )
+                            ct = res.distillation.change_type if res.distillation else "modified"
+                            changes_rows.append(
+                                f"| {status_icon} `{file_data['filename']}` "
+                                f"| +{file_data.get('additions', 0)} / -{file_data.get('deletions', 0)} "
+                                f"| {ct} |"
+                            )
+                        changes_section = (
+                            "### 📋 Changes\n\n"
+                            "| File | Diff | Change Type |\n"
+                            "|---|---|---|\n"
+                            + "\n".join(changes_rows)
+                        )
+
+                        # ── Quality score ──────────────────────────────────────
+                        note_count = sum(1 for fd in findings_dicts if fd.get("severity") == "note")
+                        penalty = min(error_count * 2 + warning_count * 0.5 + note_count * 0.1, 10)
+                        quality_score = max(0, round(10 - penalty, 1))
+                        score_emoji = "🟢" if quality_score >= 8 else ("🟡" if quality_score >= 5 else "🔴")
+                        quality_section = (
+                            f"### {score_emoji} PR Quality Score: **{quality_score}/10**\n\n"
+                            f"| Severity | Count |\n|---|---|\n"
+                            f"| 🔴 Errors | {error_count} |\n"
+                            f"| 🟡 Warnings | {warning_count} |\n"
+                            f"| 🔵 Notes | {note_count} |"
+                        )
+
+                        # ── Blast radius ────────────────────────────────────────
+                        blast_section = ""
+                        if impact_report:
+                            blast_items = []
+                            affected = impact_report.get("affected_files", [])
+                            if affected:
+                                for aff in affected[:10]:  # cap at 10
+                                    fname = aff if isinstance(aff, str) else aff.get("file", str(aff))
+                                    blast_items.append(f"- `{fname}`")
+                                blast_section = (
+                                    "### 🕸️ Blast Radius\n\n"
+                                    "These files may be indirectly affected by this PR:\n\n"
+                                    + "\n".join(blast_items)
+                                    + ("\n\n_...and more._" if len(affected) > 10 else "")
+                                )
+
+                        # ── Findings detail ────────────────────────────────────
+                        findings_detail_lines = []
                         for fd in findings_dicts:
-                            if fd.get("severity") in ["error", "warning"]:
-                                formatted_summary += f"- **{fd['severity'].upper()}** in `{fd.get('file')}:{fd.get('line')}`: {fd.get('comment')}\n"
-                        pr_obj.create_issue_comment(f"{formatted_summary}\n\n<!-- devassist-ai -->")
-                        logger.info("Posted summary comment to GitHub PR")
+                            sev = fd.get("severity", "note")
+                            if sev not in ["error", "warning", "note"]:
+                                continue
+                            sev_icon = {"error": "🔴", "warning": "🟡", "note": "🔵"}.get(sev, "ℹ️")
+                            file_ref = f"`{fd.get('file', '?')}:{fd.get('line', '?')}`"
+                            findings_detail_lines.append(
+                                f"| {sev_icon} **{sev.upper()}** | {file_ref} | {fd.get('category', '')} | {fd.get('comment', '')} |"
+                            )
+                            if fd.get("code_fix"):
+                                lang = "python" if fd.get("file", "").endswith(".py") else \
+                                       "typescript" if fd.get("file", "").endswith((".ts", ".tsx")) else \
+                                       "javascript" if fd.get("file", "").endswith((".js", ".jsx")) else ""
+                                findings_detail_lines.append(
+                                    f"\n  <details><summary>Suggested fix</summary>\n\n"
+                                    f"  ```{lang}\n  {fd['code_fix'].strip()}\n  ```\n\n  </details>"
+                                )
+
+                        findings_section = ""
+                        if findings_detail_lines:
+                            findings_section = (
+                                "### 🐛 Findings\n\n"
+                                "| Severity | Location | Category | Message |\n"
+                                "|---|---|---|---|\n"
+                                + "\n".join(findings_detail_lines)
+                            )
+
+                        # ── Assemble full comment ──────────────────────────────
+                        parts = [walkthrough_section, changes_section, quality_section]
+                        if blast_section:
+                            parts.append(blast_section)
+                        if findings_section:
+                            parts.append(findings_section)
+
+                        full_comment = "\n\n".join(parts) + "\n\n<!-- devassist-ai -->"
+                        pr_obj.create_issue_comment(full_comment)
+                        logger.info("Posted enriched summary comment to GitHub PR")
+                    except Exception as e:
+                        logger.error(f"Failed to build/post summary comment: {e}")
                 except Exception as e:
                     logger.error(f"Failed to post comments to GitHub: {e}")
 
@@ -413,7 +595,11 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                 model_used=model_used,
                 provider_used=provider_used,
                 raw_summary=raw_summary,
-                pipeline_meta={"mode": pipeline.mode, "files_count": len(reviewable_files)}
+                pipeline_meta={
+                    "mode": pipeline.mode,
+                    "files_count": len(reviewable_files),
+                    "impact_report": impact_report,  # persist blast-radius for frontend
+                }
             )
             await ReviewEventRepo.create(
                 session=session,

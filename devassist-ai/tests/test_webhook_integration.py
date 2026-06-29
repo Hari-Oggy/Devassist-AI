@@ -119,7 +119,7 @@ async def test_worker_parses_context_correctly():
          patch("models.repositories.ReviewRepo.mark_completed", new_callable=AsyncMock) as mock_review_completed, \
          patch("models.repositories.ReviewEventRepo.create", new_callable=AsyncMock) as mock_event_create, \
          patch("workers.review_worker.sse_manager", mock_sse), \
-         patch("workers.review_worker.get_github_client") as mock_gh_client, \
+         patch("agents.tools.github_tool.get_github_client") as mock_gh_client, \
          patch("workers.review_worker.load_prompt") as mock_load_prompt, \
          patch("workers.review_worker.ReviewPipeline") as mock_pipeline_cls, \
          patch("workers.review_worker.RepoCloner") as mock_cloner_cls, \
@@ -136,10 +136,15 @@ async def test_worker_parses_context_correctly():
         mock_review_create.return_value = mock_review
 
         # Setup GitHub client mock
+        mock_file = MagicMock()
+        mock_file.filename = "src/main.py"
+        mock_file.patch = "@@ -1,3 +1,3 @@"
+        mock_file.status = "modified"
+        mock_file.additions = 1
+        mock_file.deletions = 1
+
         mock_gh = MagicMock()
-        mock_gh.get_reviewable_files.return_value = [
-            {"filename": "src/main.py", "patch": "@@ -1,3 +1,3 @@", "status": "modified", "additions": 1, "deletions": 1}
-        ]
+        mock_gh.repo.get_pull.return_value.get_files.return_value = [mock_file]
         mock_gh_client.return_value = mock_gh
 
         # Setup Pipeline and CodeGraph mocks
@@ -191,16 +196,19 @@ async def test_worker_parses_context_correctly():
             provider_url="https://github.com/testowner/testrepo/pull/42"
         )
 
+        from core.pipeline_config import get_pipeline_settings
         mock_review_create.assert_called_once_with(
             session=mock_session,
             pull_request_id=200,
+            mode=get_pipeline_settings().REVIEW_MODE,
             commit_sha="abcdef123456"
         )
 
         mock_review_running.assert_called_once_with(mock_session, 300)
 
         # Assert GitHub client was queried with correct PR number
-        mock_gh.get_reviewable_files.assert_called_once_with(42)
+        assert mock_gh.repo.get_pull.call_count == 2
+        mock_gh.repo.get_pull.assert_any_call(42)
 
         # Assert review was successfully completed
         assert result["success"] is True

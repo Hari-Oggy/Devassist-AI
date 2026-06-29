@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     BOT_NAME: str = Field(default="devassist-ai", description="Bot identity name used in comment markers")
     POLLING_ENABLED: bool = Field(default=False, description="Enable GitHub polling mode (alternative to webhooks)")
     POLLING_INTERVAL: int = Field(default=30, description="Seconds between GitHub polls")
+    NGROK_AUTH_TOKEN: Optional[str] = Field(default=None, description="Optional Pyngrok auth token")
 
     # --- Review Protection ---
     MAX_DIFF_SIZE: int = Field(default=15000, description="Max diff characters to send to LLM (truncate beyond)")
@@ -71,7 +72,7 @@ class Settings(BaseSettings):
     REQUIRE_LABEL: str = Field(default="", description="If set, only review PRs with this label")
 
     # --- CORS / API Security ---
-    CORS_ORIGINS: str = Field(default="http://localhost:8501", description="Comma-separated allowed CORS origins")
+    CORS_ORIGINS: str = Field(default="http://localhost:3000", description="Comma-separated allowed CORS origins")
     API_KEY: str = Field(default="", description="API key to protect FastAPI endpoints (leave empty to disable)")
 
     model_config = {

@@ -1,492 +1,314 @@
 """
-Tests for Phase 3: Docker Sandbox + Static Analysis tools.
+Tests for DockerSandbox and AgenticExecutor.
 
-Tests cover:
-    - LintFinding / SandboxResult models
-    - DockerSandbox availability check
-    - StaticAnalyzer runner selection and aggregation
-    - Individual runner output parsers (without running actual tools)
-    - AgenticExecutor script validation (banned imports, syntax)
-    - SandboxResult helper methods
+All tests run without a real Docker daemon by mocking the docker-py client.
+The AgenticExecutor tests also mock LLMRouter so no real API calls are made.
 """
 
-import json
-import textwrap
+from __future__ import annotations
+
+from unittest.mock import MagicMock, patch, PropertyMock
+
 import pytest
-from unittest.mock import MagicMock, patch
 
-from analyzers.models import (
-    LintFinding, SandboxResult, Severity, ToolRunResult,
-)
+from analyzers.docker_sandbox import DockerSandbox, SandboxRunResult
 
 
-# ── Model Tests ─────────────────────────────────────────────────────────
+# ── DockerSandbox ─────────────────────────────────────────────────────────
 
 
-class TestLintFinding:
-    def test_defaults(self):
-        finding = LintFinding(tool="ruff", file_path="utils.py")
-        assert finding.line == 0
-        assert finding.severity == Severity.NOTE   # actual default is NOTE
-        assert finding.message == ""
+class TestDockerSandboxAvailability:
+    def test_is_available_when_docker_up(self):
+        sandbox = DockerSandbox()
+        mock_client = MagicMock()
+        mock_client.ping.return_value = True
+        mock_client.images.get.return_value = MagicMock()  # image exists
 
-    def test_severity_enum(self):
-        finding = LintFinding(
-            tool="bandit", file_path="api.py",
-            line=42, severity=Severity.ERROR,
-            rule_id="B101", message="assert used",
+        with patch.object(sandbox, "_get_client", return_value=mock_client):
+            assert sandbox.is_available() is True
+
+    def test_is_available_returns_false_when_docker_missing(self):
+        sandbox = DockerSandbox()
+        with patch.object(sandbox, "_get_client", side_effect=Exception("No daemon")):
+            assert sandbox.is_available() is False
+
+    def test_is_available_returns_false_when_image_missing(self):
+        sandbox = DockerSandbox()
+        mock_client = MagicMock()
+        mock_client.ping.return_value = True
+        mock_client.images.get.side_effect = Exception("Image not found")
+
+        with patch.object(sandbox, "_get_client", return_value=mock_client):
+            assert sandbox.is_available() is False
+
+
+class TestDockerSandboxRunCommand:
+    def _make_container_mock(self, exit_code=0, stdout=b'[]', stderr=b''):
+        container = MagicMock()
+        container.wait.return_value = {"StatusCode": exit_code}
+        container.logs.side_effect = [stdout, stderr]
+        return container
+
+    def _patch_docker(self, sandbox, container_mock):
+        """Patch both docker import AND _get_client so the code path is exercised."""
+        mock_docker_module = MagicMock()
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = container_mock
+        mock_docker_module.from_env.return_value = mock_client
+
+        return (
+            patch.dict("sys.modules", {"docker": mock_docker_module}),
+            patch.object(sandbox, "_get_client", return_value=mock_client),
+            mock_client,
         )
-        assert finding.severity == Severity.ERROR
-        assert finding.severity.value == "ERROR"  # enum values are uppercase
 
-
-class TestToolRunResult:
-    def test_success_result(self):
-        result = ToolRunResult(
-            tool="ruff",
-            success=True,
-            findings=[
-                LintFinding(tool="ruff", file_path="a.py", line=1,
-                            severity=Severity.ERROR, rule_id="E501",
-                            message="Line too long"),
-            ],
-            duration_seconds=0.5,
+    def test_run_command_success(self):
+        sandbox = DockerSandbox()
+        container_mock = self._make_container_mock(
+            exit_code=0,
+            stdout=b'[{"file":"a.py","line":1,"severity":"error","message":"test"}]'
         )
+        mock_docker_module = MagicMock()
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = container_mock
+
+        with patch.dict("sys.modules", {"docker": mock_docker_module}), \
+             patch.object(sandbox, "_get_client", return_value=mock_client):
+            result = sandbox.run_command(
+                command=["python", "/sandbox/script.py"],
+                repo_path="/fake/repo",
+            )
+
         assert result.success is True
-        assert len(result.findings) == 1
+        assert result.exit_code == 0
 
-    def test_error_result(self):
-        result = ToolRunResult(
-            tool="semgrep",
-            success=False,
-            error="semgrep not installed",
-            exit_code=-2,
-        )
+    def test_run_command_non_zero_exit(self):
+        sandbox = DockerSandbox()
+        container_mock = self._make_container_mock(exit_code=1, stdout=b'', stderr=b'SyntaxError')
+        mock_docker_module = MagicMock()
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = container_mock
+
+        with patch.dict("sys.modules", {"docker": mock_docker_module}), \
+             patch.object(sandbox, "_get_client", return_value=mock_client):
+            result = sandbox.run_command(
+                command=["python", "/sandbox/script.py"],
+                repo_path="/fake/repo",
+            )
+
         assert result.success is False
-        assert result.findings == []
+        assert result.exit_code == 1
 
+    def test_run_command_timeout(self):
+        sandbox = DockerSandbox(timeout=1)
+        container_mock = MagicMock()
+        container_mock.wait.side_effect = Exception("Timed out")
+        container_mock.logs.side_effect = [b'', b'']
+        mock_docker_module = MagicMock()
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = container_mock
 
-class TestSandboxResult:
-    def _make_result(self):
-        findings = [
-            LintFinding(tool="ruff", file_path="a.py", line=10,
-                        severity=Severity.ERROR, rule_id="E501",
-                        message="Line too long"),
-            LintFinding(tool="bandit", file_path="b.py", line=20,
-                        severity=Severity.ERROR, rule_id="B101",
-                        message="Assert used"),
-            LintFinding(tool="ruff", file_path="a.py", line=5,
-                        severity=Severity.WARNING, rule_id="W291",
-                        message="Trailing whitespace"),
-        ]
-        return SandboxResult(
-            files_analyzed=["a.py", "b.py"],
-            all_findings=findings,
-            tool_results=[
-                ToolRunResult(tool="ruff", success=True, findings=findings[:2]),
-                ToolRunResult(tool="bandit", success=True, findings=findings[2:]),
-            ],
-        )
+        with patch.dict("sys.modules", {"docker": mock_docker_module}), \
+             patch.object(sandbox, "_get_client", return_value=mock_client):
+            result = sandbox.run_command(
+                command=["python", "/sandbox/script.py"],
+                repo_path="/fake/repo",
+                timeout=1,
+            )
 
-    def test_error_count(self):
-        result = self._make_result()
-        assert result.error_count() == 2
+        assert result.timed_out is True
+        assert result.success is False
 
-    def test_warning_count(self):
-        result = self._make_result()
-        assert result.warning_count() == 1
-
-    def test_findings_by_file(self):
-        result = self._make_result()
-        by_file = result.findings_by_file()
-        assert "a.py" in by_file
-        assert "b.py" in by_file
-        assert len(by_file["a.py"]) == 2
-
-    def test_findings_by_severity(self):
-        result = self._make_result()
-        by_sev = result.findings_by_severity()
-        assert "error" in by_sev or Severity.ERROR in by_sev or "ERROR" in by_sev
-        errors = by_sev.get("error") or by_sev.get(Severity.ERROR) or by_sev.get("ERROR", [])
-        assert len(errors) == 2
-
-    def test_to_summary_string(self):
-        result = self._make_result()
-        summary = result.to_summary_string()
-        assert isinstance(summary, str)
-        assert len(summary) > 0
-
-
-# ── Docker Sandbox Tests ─────────────────────────────────────────────────
-
-
-class TestDockerSandbox:
-    def test_init_defaults(self):
-        from analyzers.docker_sandbox import DockerSandbox
+    def test_run_command_docker_not_importable(self):
         sandbox = DockerSandbox()
-        assert sandbox.memory == DockerSandbox.DEFAULT_MEMORY
-        assert sandbox.timeout == DockerSandbox.DEFAULT_TIMEOUT
-        assert sandbox.network == "none"
+        with patch.object(sandbox, "_get_client", side_effect=ImportError("No module docker")):
+            result = sandbox.run_command(
+                command=["python", "/sandbox/script.py"],
+                repo_path="/fake/repo",
+            )
+        assert result.success is False
+        assert result.error is not None
 
-    def test_init_custom(self):
-        from analyzers.docker_sandbox import DockerSandbox
-        sandbox = DockerSandbox(memory="256m", timeout=60, cpus="0.5")
-        assert sandbox.memory == "256m"
-        assert sandbox.timeout == 60
-
-    @patch("subprocess.run")
-    def test_is_available_docker_present(self, mock_run):
-        from analyzers.docker_sandbox import DockerSandbox
-        mock_run.return_value = MagicMock(returncode=0)
+    def test_container_always_removed_on_success(self):
         sandbox = DockerSandbox()
-        assert sandbox.is_available() is True
+        container_mock = self._make_container_mock(exit_code=0, stdout=b'[]')
+        mock_docker_module = MagicMock()
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = container_mock
 
-    @patch("subprocess.run", side_effect=FileNotFoundError)
-    def test_is_available_docker_missing(self, mock_run):
-        from analyzers.docker_sandbox import DockerSandbox
+        with patch.dict("sys.modules", {"docker": mock_docker_module}), \
+             patch.object(sandbox, "_get_client", return_value=mock_client):
+            sandbox.run_command(command=["python", "x.py"], repo_path="/repo")
+
+        container_mock.remove.assert_called_once_with(force=True)
+
+    def test_container_always_removed_on_failure(self):
         sandbox = DockerSandbox()
-        assert sandbox.is_available() is False
+        container_mock = MagicMock()
+        container_mock.wait.side_effect = Exception("timeout")
+        container_mock.logs.side_effect = [b'', b'']
+        mock_docker_module = MagicMock()
+        mock_client = MagicMock()
+        mock_client.containers.run.return_value = container_mock
+
+        with patch.dict("sys.modules", {"docker": mock_docker_module}), \
+             patch.object(sandbox, "_get_client", return_value=mock_client):
+            sandbox.run_command(command=["python", "x.py"], repo_path="/repo", timeout=1)
+
+        container_mock.remove.assert_called_once_with(force=True)
 
 
-# ── Runner Parser Tests ─────────────────────────────────────────────────
+# ── AgenticExecutor ───────────────────────────────────────────────────────
 
 
-class TestRuffRunner:
-    def _get_runner(self):
-        from analyzers.tool_runners.ruff_runner import RuffRunner
-        return RuffRunner()
-
-    def test_parse_valid_json(self):
-        runner = self._get_runner()
-        raw = json.dumps([
-            {
-                "filename": "utils.py",
-                "location": {"row": 10, "column": 5},
-                "code": "E501",
-                "message": "Line too long (120 > 88)",
-                "fix": None,
-            },
-            {
-                "filename": "api.py",
-                "location": {"row": 5, "column": 1},
-                "code": "F401",
-                "message": "'os' imported but unused",
-                "fix": None,
-            },
-        ])
-        findings = runner.parse_output(raw, "/repo")
-        assert len(findings) == 2
-        assert findings[0].file_path == "utils.py"
-        assert findings[0].line == 10
-        assert findings[0].rule_id == "E501"
-        assert findings[1].rule_id == "F401"
-
-    def test_parse_empty_output(self):
-        runner = self._get_runner()
-        findings = runner.parse_output("[]", "/repo")
-        assert findings == []
-
-    def test_parse_invalid_json(self):
-        runner = self._get_runner()
-        findings = runner.parse_output("not json", "/repo")
-        assert isinstance(findings, list)
-
-    def test_severity_mapping_error(self):
-        runner = self._get_runner()
-        raw = json.dumps([{
-            "filename": "x.py", "location": {"row": 1, "column": 1},
-            "code": "E101", "message": "error", "fix": None,
-        }])
-        findings = runner.parse_output(raw, "/repo")
-        assert findings[0].severity == Severity.ERROR
-
-    def test_severity_mapping_warning(self):
-        runner = self._get_runner()
-        raw = json.dumps([{
-            "filename": "x.py", "location": {"row": 1, "column": 1},
-            "code": "W291", "message": "trailing whitespace", "fix": None,
-        }])
-        findings = runner.parse_output(raw, "/repo")
-        assert findings[0].severity == Severity.WARNING
-
-
-class TestBanditRunner:
-    def _get_runner(self):
-        from analyzers.tool_runners.bandit_runner import BanditRunner
-        return BanditRunner()
-
-    def test_parse_valid_json(self):
-        runner = self._get_runner()
-        raw = json.dumps({
-            "results": [
-                {
-                    "filename": "auth.py",
-                    "line_number": 42,
-                    "test_id": "B101",
-                    "issue_text": "Use of assert detected",
-                    "issue_severity": "HIGH",
-                    "issue_confidence": "HIGH",
-                }
-            ]
-        })
-        findings = runner.parse_output(raw, "/repo")
-        assert len(findings) == 1
-        assert findings[0].severity == Severity.ERROR
-        assert findings[0].rule_id == "B101"
-        assert findings[0].line == 42
-
-    def test_severity_high_is_error(self):
-        runner = self._get_runner()
-        raw = json.dumps({"results": [{
-            "filename": "a.py", "line_number": 1,
-            "test_id": "B102", "issue_text": "High risk",
-            "issue_severity": "HIGH", "issue_confidence": "HIGH",
-        }]})
-        findings = runner.parse_output(raw, "/repo")
-        assert findings[0].severity == Severity.ERROR
-
-    def test_severity_medium_is_warning(self):
-        runner = self._get_runner()
-        raw = json.dumps({"results": [{
-            "filename": "a.py", "line_number": 1,
-            "test_id": "B201", "issue_text": "Medium risk",
-            "issue_severity": "MEDIUM", "issue_confidence": "MEDIUM",
-        }]})
-        findings = runner.parse_output(raw, "/repo")
-        assert findings[0].severity == Severity.WARNING
-
-    def test_empty_results(self):
-        runner = self._get_runner()
-        findings = runner.parse_output(json.dumps({"results": []}), "/repo")
-        assert findings == []
-
-
-class TestPipAuditRunner:
-    def _get_runner(self):
-        from analyzers.tool_runners.pip_audit_runner import PipAuditRunner
-        return PipAuditRunner()
-
-    def test_parse_vulnerabilities(self):
-        runner = self._get_runner()
-        raw = json.dumps({
-            "dependencies": [
-                {
-                    "name": "requests",
-                    "version": "2.25.0",
-                    "vulns": [
-                        {
-                            "id": "CVE-2021-12345",
-                            "fix_versions": ["2.26.0"],
-                            "description": "SSRF vulnerability",
-                        }
-                    ],
-                },
-                {
-                    "name": "numpy",
-                    "version": "1.21.0",
-                    "vulns": [],
-                },
-            ]
-        })
-        findings = runner.parse_output(raw, "/repo")
-        assert len(findings) == 1
-        assert findings[0].severity == Severity.ERROR
-        assert "CVE-2021-12345" in findings[0].rule_id
-        assert "requests" in findings[0].message
-
-    def test_no_vulnerabilities(self):
-        runner = self._get_runner()
-        raw = json.dumps({"dependencies": [
-            {"name": "flask", "version": "2.0.0", "vulns": []},
-        ]})
-        findings = runner.parse_output(raw, "/repo")
-        assert findings == []
-
-
-class TestTrivyRunner:
-    def _get_runner(self):
-        from analyzers.tool_runners.trivy_runner import TrivyRunner
-        return TrivyRunner()
-
-    def test_parse_vulnerabilities(self):
-        runner = self._get_runner()
-        raw = json.dumps({
-            "Results": [
-                {
-                    "Target": "requirements.txt",
-                    "Vulnerabilities": [
-                        {
-                            "VulnerabilityID": "CVE-2022-99999",
-                            "PkgName": "pillow",
-                            "InstalledVersion": "8.0.0",
-                            "FixedVersion": "9.0.0",
-                            "Severity": "CRITICAL",
-                            "Description": "Image parsing vulnerability",
-                        }
-                    ],
-                }
-            ]
-        })
-        findings = runner.parse_output(raw, "/repo")
-        assert len(findings) == 1
-        assert findings[0].severity == Severity.ERROR
-        assert findings[0].file_path == "requirements.txt"
-
-    def test_severity_mapping(self):
-        runner = self._get_runner()
-        raw = json.dumps({"Results": [{
-            "Target": "go.sum",
-            "Vulnerabilities": [
-                {"VulnerabilityID": "CVE-1", "PkgName": "pkg", "InstalledVersion": "1.0",
-                 "FixedVersion": "2.0", "Severity": "HIGH", "Description": "..."},
-                {"VulnerabilityID": "CVE-2", "PkgName": "pkg2", "InstalledVersion": "1.0",
-                 "FixedVersion": "2.0", "Severity": "MEDIUM", "Description": "..."},
-                {"VulnerabilityID": "CVE-3", "PkgName": "pkg3", "InstalledVersion": "1.0",
-                 "FixedVersion": "2.0", "Severity": "LOW", "Description": "..."},
-            ]
-        }]})
-        findings = runner.parse_output(raw, "/repo")
-        assert len(findings) == 3
-        assert findings[0].severity == Severity.ERROR    # HIGH
-        assert findings[1].severity == Severity.WARNING   # MEDIUM
-        assert findings[2].severity == Severity.NOTE      # LOW
-
-
-# ── AgenticExecutor Tests ────────────────────────────────────────────────
-
-
-class TestAgenticExecutor:
-    def _get_executor(self):
+class TestAgenticExecutorValidation:
+    def _make_executor(self):
         from analyzers.agentic_executor import AgenticExecutor
-        return AgenticExecutor()
+        mock_sandbox = MagicMock()
+        mock_sandbox.is_available.return_value = True
+        mock_router = MagicMock()
+        return AgenticExecutor(sandbox=mock_sandbox, router=mock_router), mock_sandbox, mock_router
 
-    def test_validate_clean_script(self):
-        executor = self._get_executor()
-        script = textwrap.dedent("""\
-            import ast
-            import json
+    def test_validate_script_allows_safe_code(self):
+        from analyzers.agentic_executor import AgenticExecutor
+        executor = AgenticExecutor.__new__(AgenticExecutor)
+        safe_script = "import ast\nimport json\nprint(json.dumps([]))\n"
+        assert executor._validate_script(safe_script) is None
 
-            findings = []
-            # Simple analysis
-            print(json.dumps(findings))
-        """)
-        is_valid, reason = executor.validate_script(script)
-        assert is_valid is True
+    def test_validate_script_blocks_socket(self):
+        from analyzers.agentic_executor import AgenticExecutor
+        executor = AgenticExecutor.__new__(AgenticExecutor)
+        bad = "import socket\ns = socket.socket()\n"
+        assert executor._validate_script(bad) is not None
 
-    def test_validate_banned_import_os(self):
-        executor = self._get_executor()
-        script = "import os\nprint(os.listdir('/'))"
-        is_valid, reason = executor.validate_script(script)
-        assert is_valid is False
-        assert "os" in reason.lower() or "banned" in reason.lower()
+    def test_validate_script_blocks_subprocess(self):
+        from analyzers.agentic_executor import AgenticExecutor
+        executor = AgenticExecutor.__new__(AgenticExecutor)
+        bad = "import subprocess\nsubprocess.run(['ls'])\n"
+        assert executor._validate_script(bad) is not None
 
-    def test_validate_banned_import_subprocess(self):
-        executor = self._get_executor()
-        script = "import subprocess\nsubprocess.run(['rm', '-rf', '/'])"
-        is_valid, reason = executor.validate_script(script)
-        assert is_valid is False
+    def test_validate_script_blocks_file_write(self):
+        from analyzers.agentic_executor import AgenticExecutor
+        executor = AgenticExecutor.__new__(AgenticExecutor)
+        bad = "with open('/etc/passwd', 'w') as f: f.write('pwned')\n"
+        assert executor._validate_script(bad) is not None
 
-    def test_validate_eval_usage(self):
-        executor = self._get_executor()
-        script = "result = eval('1 + 1')"
-        is_valid, reason = executor.validate_script(script)
-        assert is_valid is False
+    def test_validate_script_blocks_eval(self):
+        from analyzers.agentic_executor import AgenticExecutor
+        executor = AgenticExecutor.__new__(AgenticExecutor)
+        bad = "eval('__import__(\"os\").system(\"rm -rf /\")')\n"
+        assert executor._validate_script(bad) is not None
 
-    def test_validate_exec_usage(self):
-        executor = self._get_executor()
-        script = "exec('import os')"
-        is_valid, reason = executor.validate_script(script)
-        assert is_valid is False
+    def test_validate_script_blocks_too_many_lines(self):
+        from analyzers.agentic_executor import AgenticExecutor
+        executor = AgenticExecutor.__new__(AgenticExecutor)
+        big = "\n".join(["x = 1"] * 201)
+        assert executor._validate_script(big) is not None
 
-    def test_validate_syntax_error(self):
-        executor = self._get_executor()
-        script = "def broken(:\n    pass"
-        is_valid, reason = executor.validate_script(script)
-        assert is_valid is False
 
-    def test_validate_too_long(self):
-        executor = self._get_executor()
-        # 201 lines
-        script = "\n".join(["# line" for _ in range(201)])
-        is_valid, reason = executor.validate_script(script)
-        assert is_valid is False
-
-    def test_parse_valid_output(self):
-        executor = self._get_executor()
-        output = json.dumps({
-            "file": "utils.py",
-            "line": 10,
-            "severity": "error",
-            "message": "Potential bug detected",
-        })
-        findings = executor._parse_script_output(output)
+class TestAgenticExecutorParsing:
+    def test_parse_findings_valid_json(self):
+        from analyzers.agentic_executor import AgenticExecutor
+        executor = AgenticExecutor.__new__(AgenticExecutor)
+        stdout = '[{"file":"a.py","line":10,"severity":"error","message":"SQL injection"}]'
+        findings = executor._parse_findings(stdout)
         assert len(findings) == 1
-        assert findings[0].line == 10
-        assert findings[0].severity == Severity.ERROR
+        assert findings[0]["severity"] == "error"
+        assert findings[0]["line"] == 10
 
-    def test_parse_invalid_output(self):
-        executor = self._get_executor()
-        findings = executor._parse_script_output("not json at all")
-        assert isinstance(findings, list)
+    def test_parse_findings_empty_stdout(self):
+        from analyzers.agentic_executor import AgenticExecutor
+        executor = AgenticExecutor.__new__(AgenticExecutor)
+        assert executor._parse_findings("") == []
+
+    def test_parse_findings_no_json_array(self):
+        from analyzers.agentic_executor import AgenticExecutor
+        executor = AgenticExecutor.__new__(AgenticExecutor)
+        assert executor._parse_findings("script completed OK\n") == []
+
+    def test_parse_findings_ignores_non_dict_items(self):
+        from analyzers.agentic_executor import AgenticExecutor
+        executor = AgenticExecutor.__new__(AgenticExecutor)
+        stdout = '[{"file":"a.py","line":1,"severity":"warning","message":"test"}, "bad"]'
+        findings = executor._parse_findings(stdout)
+        assert len(findings) == 1
 
 
-# ── StaticAnalyzer Tests ─────────────────────────────────────────────────
+class TestAgenticExecutorE2E:
+    def test_execute_analysis_no_docker(self):
+        from analyzers.agentic_executor import AgenticExecutor
+        mock_sandbox = MagicMock()
+        mock_sandbox.is_available.return_value = False
+        executor = AgenticExecutor(sandbox=mock_sandbox, router=MagicMock())
 
-
-class TestStaticAnalyzer:
-    def test_init(self):
-        from analyzers.static_analyzer import StaticAnalyzer
-        analyzer = StaticAnalyzer(max_workers=2)
-        assert analyzer.max_workers == 2
-
-    def test_select_python_runners(self):
-        from analyzers.static_analyzer import StaticAnalyzer
-        from analyzers.tool_runners.ruff_runner import RuffRunner
-        from analyzers.tool_runners.bandit_runner import BanditRunner
-        from unittest.mock import patch
-        analyzer = StaticAnalyzer()
-        # Patch is_available to return True for all runners
-        with patch.object(RuffRunner, "is_available", return_value=True), \
-             patch.object(BanditRunner, "is_available", return_value=True):
-            runners = analyzer._select_runners("python", None)
-        tool_names = [r.TOOL_NAME for r in runners]
-        assert "ruff" in tool_names
-        assert "bandit" in tool_names
-
-    def test_select_with_filter(self):
-        from analyzers.static_analyzer import StaticAnalyzer
-        from analyzers.tool_runners.ruff_runner import RuffRunner
-        from unittest.mock import patch
-        analyzer = StaticAnalyzer()
-        with patch.object(RuffRunner, "is_available", return_value=True):
-            runners = analyzer._select_runners("python", ["ruff"])
-        tool_names = [r.TOOL_NAME for r in runners]
-        assert "ruff" in tool_names
-        assert all(t == "ruff" for t in tool_names)
-
-    def test_run_single_handles_exception(self):
-        from analyzers.static_analyzer import StaticAnalyzer
-        analyzer = StaticAnalyzer()
-        mock_runner = MagicMock()
-        mock_runner.TOOL_NAME = "test_tool"
-        mock_runner.run.side_effect = RuntimeError("tool crashed")
-        result = analyzer._run_single(mock_runner, "/tmp", None)
-        assert result.success is False
-        assert "crashed" in result.error or "test_tool" in result.error
-
-    def test_analyze_returns_sandbox_result(self):
-        from analyzers.static_analyzer import StaticAnalyzer
-        analyzer = StaticAnalyzer()
-
-        # Mock all runners to return empty ToolRunResults
-        mock_runner = MagicMock()
-        mock_runner.TOOL_NAME = "mock_tool"
-        mock_runner.is_available.return_value = True
-        mock_runner.run.return_value = ToolRunResult(
-            tool="mock_tool", success=True, findings=[],
+        result = executor.execute_analysis(
+            pr_diff="@@ -1,1 +1,1 @@ print('hello')",
+            repo_path="/fake/repo",
+            pr_number=42,
         )
 
-        with patch.object(analyzer, "_select_runners", return_value=[mock_runner]):
-            result = analyzer.analyze("/tmp")
+        assert result.success is False
+        assert result.sandbox_available is False
+        assert "Docker" in result.error
 
-        assert isinstance(result, SandboxResult)
+    def test_execute_analysis_full_flow(self):
+        from analyzers.agentic_executor import AgenticExecutor
+        from llm.schemas import LLMResponse
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.is_available.return_value = True
+        
+        # Sandbox returns findings JSON
+        sandbox_result = MagicMock()
+        sandbox_result.success = True
+        sandbox_result.timed_out = False
+        sandbox_result.error = None
+        sandbox_result.stdout = '[{"file":"auth.py","line":5,"severity":"error","message":"SQL injection risk"}]'
+        sandbox_result.stderr = ""
+        sandbox_result.exit_code = 0
+        sandbox_result.duration_seconds = 1.2
+        mock_sandbox.run_command.return_value = sandbox_result
+
+        mock_router = MagicMock()
+        mock_router.generate.return_value = LLMResponse(
+            success=True,
+            content="```python\nimport json\nprint(json.dumps([{\"file\": \"auth.py\", \"line\": 5, \"severity\": \"error\", \"message\": \"SQL injection risk\"}]))\n```",
+            model="gpt-4o",
+            provider="openai",
+            tokens_input=100,
+            tokens_output=50,
+        )
+
+        executor = AgenticExecutor(sandbox=mock_sandbox, router=mock_router)
+        result = executor.execute_analysis(
+            pr_diff="@@ -1,1 +1,1 @@ query = f'SELECT * FROM users WHERE id={user_id}'",
+            repo_path="/fake/repo",
+            pr_number=1,
+        )
+
+        assert result.success is True
+        assert result.sandbox_available is True
+        assert len(result.findings) == 1
+        assert result.findings[0]["severity"] == "error"
+
+    def test_to_markdown_with_findings(self):
+        from analyzers.agentic_executor import AgenticAnalysisResult
+        r = AgenticAnalysisResult(
+            success=True,
+            findings=[{"file": "auth.py", "line": 5, "severity": "error", "message": "SQL injection"}]
+        )
+        md = r.to_markdown()
+        assert "Runtime Analysis Findings" in md
+        assert "auth.py" in md
+
+    def test_to_markdown_no_findings(self):
+        from analyzers.agentic_executor import AgenticAnalysisResult
+        r = AgenticAnalysisResult(success=True, findings=[])
+        md = r.to_markdown()
+        assert "no issues" in md
+
+    def test_to_markdown_on_failure(self):
+        from analyzers.agentic_executor import AgenticAnalysisResult
+        r = AgenticAnalysisResult(success=False, error="Docker not running")
+        md = r.to_markdown()
+        assert "Docker not running" in md

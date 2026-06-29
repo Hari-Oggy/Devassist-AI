@@ -161,13 +161,14 @@ Short dunder methods (__len__, __contains__, __iter__):
 
 ## OUTPUT RULES — NON-NEGOTIABLE
 
-1. Return ONLY the complete updated Python file. No markdown fences. No preamble. No explanation. Raw Python only.
-2. Insert docstrings on the line immediately after the def or class line, before any other code.
-3. DO NOT modify: logic, imports, variable names, spacing, blank lines, or existing docstrings.
-4. DO NOT add type hints that do not already exist. Docstring only.
-5. If a docstring already exists but is incomplete or wrong — IMPROVE it. Do not replace a correct partial docstring with a worse one.
-6. Preserve original indentation exactly. A method inside a class is indented one level deeper.
-7. The output must be syntactically valid Python. Mentally parse it before returning.
+1. Return ONLY the complete updated source file. No preamble. No explanation. Raw code only.
+2. DO NOT modify: logic, imports, variable names, spacing, blank lines, or existing documentation.
+3. DO NOT add type hints that do not already exist. Documentation comments only.
+4. If a docstring already exists but is incomplete or wrong — IMPROVE it. Do not replace a correct partial docstring with a worse one.
+5. Preserve original indentation exactly.
+6. The output must be syntactically valid in the target language. Mentally parse it before returning.
+7. Do NOT wrap your output in markdown code fences (like ```python or ```js). Just output the raw text of the file.
+
 
 ---
 
@@ -175,12 +176,12 @@ Short dunder methods (__len__, __contains__, __iter__):
 
 Go through this checklist item by item before outputting:
 
-  [ ] Every public function and class has a docstring
-  [ ] Zero docstrings restate the function name as the summary (Rule 1)
-  [ ] Zero docstrings use the words: handles, processes, deals with, manages, performs (Rule 2)
-  [ ] Every Args description adds information beyond what the type hint already says (Rule 3)
-  [ ] Every Raises entry was verified against the actual implementation — not assumed (Rule 4)
-  [ ] Every Returns description explains what the value MEANS, not just its type
-  [ ] No logic was changed — not a single character outside of docstring blocks
-  [ ] The file is syntactically valid Python — indentation is correct throughout
-  [ ] Existing correct docstrings were preserved or improved, never degraded
+[ ] Every public function, method, class, interface, or equivalent API element has documentation where applicable
+[ ] No documentation summary simply restates the name of the documented element (Rule 1)
+[ ] No documentation uses vague verbs such as: handles, processes, deals with, manages, or performs (Rule 2)
+[ ] Every parameter description adds useful information beyond what is already expressed by its name or type (Rule 3)
+[ ] Every documented exception, error, or thrown condition was verified against the actual implementation—not assumed (Rule 4)
+[ ] Every return-value description explains what the returned value represents or means, not merely its type
+[ ] No executable logic was modified—only documentation was changed
+[ ] The file remains syntactically valid, with correct formatting and structure throughout
+[ ] Existing accurate documentation was preserved or improved, never made less informative

@@ -188,24 +188,22 @@ class FindingValidator:
         filename: str,
     ) -> list[ValidatedFinding]:
         """Parse the validation LLM output and merge with original findings."""
-        # Strip markdown code fences
-        cleaned = re.sub(r"```(?:json)?\s*", "", raw_output)
-        cleaned = re.sub(r"```\s*$", "", cleaned.strip()).strip()
+        cleaned = raw_output.strip()
+        # Remove markdown fences
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r"```\s*$", "", cleaned, flags=re.MULTILINE)
+        
+        # Extract outermost JSON array
+        first_bracket = cleaned.find('[')
+        last_bracket = cleaned.rfind(']')
+        if first_bracket != -1 and last_bracket != -1 and last_bracket >= first_bracket:
+            cleaned = cleaned[first_bracket:last_bracket+1]
 
         try:
             validation_results = json.loads(cleaned)
         except json.JSONDecodeError:
-            # Try to extract JSON array from surrounding text
-            match = re.search(r"\[.*\]", cleaned, re.DOTALL)
-            if match:
-                try:
-                    validation_results = json.loads(match.group(0))
-                except json.JSONDecodeError:
-                    logger.warning("Failed to parse validation JSON output")
-                    return self._pass_through_findings(original_findings, filename)
-            else:
-                logger.warning("No JSON array found in validation output")
-                return self._pass_through_findings(original_findings, filename)
+            logger.warning("Failed to parse validation JSON output")
+            return self._pass_through_findings(original_findings, filename)
 
         if not isinstance(validation_results, list):
             logger.warning("Validation output is not a JSON array")

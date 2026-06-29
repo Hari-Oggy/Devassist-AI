@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { UserButton, useUser } from "@clerk/nextjs";
+import { Shield } from "lucide-react";
 import {
   Search,
   LayoutDashboard,
@@ -30,7 +30,6 @@ const bottomNav = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { user, isLoaded } = useUser();
 
   return (
     <aside className="flex h-full w-[220px] shrink-0 flex-col bg-[#0d0d14] border-r border-white/[0.06]">
@@ -136,22 +135,22 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* User profile */}
+      {/* User profile — no-auth local admin */}
       <div className="border-t border-white/[0.06] p-4 bg-white/[0.01]">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">
             <div className="flex-shrink-0 relative">
-              <UserButton
-                appearance={{ elements: { avatarBox: "h-8 w-8 rounded-lg" } }}
-              />
-              <div className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 border-2 border-[#0d0d14] pulse-live" />
+              <div className="h-8 w-8 rounded-lg bg-violet-600/20 border border-violet-500/30 flex items-center justify-center">
+                <Shield className="h-4 w-4 text-violet-400" />
+              </div>
+              <div className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 border-2 border-[#0d0d14]" />
             </div>
             <div className="flex flex-col min-w-0">
               <span className="text-[13px] font-semibold text-white truncate">
-                {isLoaded && user ? user.fullName || user.username : "Loading..."}
+                Local Admin
               </span>
               <span className="text-[10px] font-medium text-violet-400/70 uppercase tracking-wider">
-                Admin
+                Self-hosted
               </span>
             </div>
           </div>

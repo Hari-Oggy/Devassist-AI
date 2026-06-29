@@ -24,7 +24,9 @@ import os
 import shutil
 import subprocess
 import tempfile
+import hashlib
 from typing import Optional
+from filelock import FileLock
 
 from core.config import get_settings
 from core.logger import get_logger
@@ -67,11 +69,15 @@ class RepoCloner:
         self,
         repo_url: Optional[str] = None,
         local_path: Optional[str] = None,
+        branch: str = "HEAD",
+        token: Optional[str] = None,
     ) -> None:
         self._repo_url: Optional[str] = repo_url
         self._local_path: Optional[str] = (
             os.path.abspath(local_path) if local_path else None
         )
+        self._branch = branch
+        self._token = token
         # All temp directories created by this instance (may be multiple if
         # clone_shallow is called more than once directly)
         self._temp_dirs: list[str] = []
@@ -123,26 +129,56 @@ class RepoCloner:
                 extra={"codebase_path": codebase_path},
             )
 
-        # 3. Shallow clone
+        # 3. Cache or Shallow clone
         if not self._repo_url:
             raise ValueError(
                 "Cannot resolve a repository path: no local_path, no valid "
                 "CODEBASE_PATH setting, and no repo_url was provided."
             )
 
-        target_dir = tempfile.mkdtemp(prefix="devassist_codegraph_")
-        self._temp_dirs.append(target_dir)
-        logger.info(
-            "Shallow-cloning repository",
-            extra={"repo_url": self._repo_url, "target_dir": target_dir},
-        )
-        return self.clone_shallow(self._repo_url, target_dir)
+        cache_base = getattr(settings, "REPO_CACHE_DIR", os.path.join(os.getcwd(), ".devassist_cache", "repos"))
+        os.makedirs(cache_base, exist_ok=True)
+        
+        # Use a hash of the URL and branch to create a unique folder for the repo
+        hash_input = f"{self._repo_url}:{self._branch}"
+        repo_hash = hashlib.md5(hash_input.encode()).hexdigest()
+        target_dir = os.path.join(cache_base, repo_hash)
+        lock_path = target_dir + ".lock"
+        
+        with FileLock(lock_path, timeout=_CLONE_TIMEOUT_SECONDS):
+            if os.path.exists(os.path.join(target_dir, ".git")):
+                logger.info(
+                    "Using cached repository, fetching latest changes",
+                    extra={"repo_url": self._repo_url, "target_dir": target_dir},
+                )
+                try:
+                    cmd_fetch = ["git", "-C", target_dir, "fetch", "--depth", "1", "origin", self._branch]
+                    subprocess.run(cmd_fetch, capture_output=True, text=True, timeout=_CLONE_TIMEOUT_SECONDS, check=True)
+                    
+                    cmd_reset = ["git", "-C", target_dir, "reset", "--hard", f"origin/{self._branch}"]
+                    subprocess.run(cmd_reset, capture_output=True, text=True, timeout=_CLONE_TIMEOUT_SECONDS, check=True)
+                    
+                    return target_dir
+                except Exception as e:
+                    logger.warning(
+                        "Failed to update cached repo, will re-clone",
+                        extra={"error": str(e)}
+                    )
+                    shutil.rmtree(target_dir, ignore_errors=True)
+            
+            logger.info(
+                "Shallow-cloning repository to cache",
+                extra={"repo_url": self._repo_url, "target_dir": target_dir},
+            )
+            # We don't append to self._temp_dirs because we want to cache it
+            return self.clone_shallow(self._repo_url, target_dir, branch=self._branch, token=self._token)
 
     def clone_shallow(
         self,
         repo_url: str,
         target_dir: str,
         branch: str = "HEAD",
+        token: Optional[str] = None,
     ) -> str:
         """Perform a shallow ``git clone --depth 1`` into *target_dir*.
 
@@ -170,13 +206,24 @@ class RepoCloner:
             "--depth", "1",
             "--single-branch",
         ]
+        log_cmd = list(cmd)
+        
+        if token:
+            import base64
+            auth_string = base64.b64encode(token.encode()).decode()
+            cmd += ["-c", f"http.extraHeader=Authorization: Basic {auth_string}"]  
+            log_cmd += ["-c", "http.extraHeader=Authorization: Basic ***"]
+            
         if branch and branch != "HEAD":
             cmd += ["--branch", branch]
+            log_cmd += ["--branch", branch]
+            
         cmd += [repo_url, target_dir]
+        log_cmd += [repo_url, target_dir]
 
         logger.info(
             "Running git clone",
-            extra={"cmd": " ".join(cmd)},
+            extra={"cmd": " ".join(log_cmd)},
         )
 
         try:

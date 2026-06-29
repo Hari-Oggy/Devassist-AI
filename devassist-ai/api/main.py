@@ -11,7 +11,7 @@ import sys
 import os
 import asyncio
 import uvicorn
-import ngrok
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
@@ -83,6 +83,22 @@ def _celery_available() -> bool:
 async def startup_event():
     logger.info(f"DevAssist AI API v3.0 running on http://{settings.API_HOST}:{settings.API_PORT}")
     
+    # --- Pyngrok Integration ---
+    # --- Pyngrok Integration ---
+    try:
+        from pyngrok import ngrok
+        if settings.NGROK_AUTH_TOKEN:
+            ngrok.set_auth_token(settings.NGROK_AUTH_TOKEN)
+        else:
+            logger.warning(f"Ngrok tunnel need auth_token ")   
+        ngrok.kill()
+        public_url = ngrok.connect(settings.API_PORT).public_url
+        logger.info(f"ngrok tunnel established at: {public_url}")
+        logger.info(f"Use {public_url}/api/v3/github/webhook for GitHub Webhooks!")
+    except Exception as e:
+        logger.warning(f"Failed to start ngrok tunnel: {e}")
+    # ---------------------------
+
     # Initialize DB — retry until Postgres is ready (handles "starting up" race condition)
     from models.database import is_using_sqlite
     backend = "SQLite (fallback)" if is_using_sqlite() else "PostgreSQL"
@@ -111,7 +127,20 @@ async def startup_event():
                     f"Database failed to become ready after {max_retries} attempts. "
                     "API will start but DB endpoints will return errors."
                 )
-    
+    # Initialize Persistent RAG Indexes asynchronously
+    try:
+        from models.database import get_db_session_context
+        from models.repositories import RepositoryRepo
+        async with get_db_session_context() as session:
+            repos = await RepositoryRepo.get_all_active(session)
+            if repos:
+                logger.info(f"Dispatching RAG index updates for {len(repos)} active repositories...")
+                from workers.rag_worker import update_repo_rag_index
+                for repo in repos:
+                    update_repo_rag_index.delay(repo.id)
+    except Exception as e:
+        logger.warning(f"Failed to dispatch initial RAG index tasks: {e}")
+
     # Start SSE Keepalive is handled dynamically in subscribe()
 
     # Start GitHub/GitLab Poller if enabled

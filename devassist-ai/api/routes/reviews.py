@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List, Dict, Any
+from typing import List, Optional
 
 from models.database import get_db_session
-from models.repositories import PullRequestRepo, ReviewRepo, FindingRepo, ReviewEventRepo
+from models.repositories import PullRequestRepo, ReviewRepo, FindingRepo, ReviewEventRepo, RepositoryRepo
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/reviews", tags=["Reviews"])
@@ -14,6 +14,9 @@ class ReviewTriggerRequest(BaseModel):
     provider: str
     repo_full_name: str
     pr_number: int
+
+class SuppressionRequest(BaseModel):
+    reason: str = "False positive"
 
 class FindingResponse(BaseModel):
     id: int
@@ -129,26 +132,182 @@ async def get_review_audit_log(
         } for e in events
     ]
 
+@router.get("/{review_id}/impact")
+async def get_review_impact(
+    review_id: int,
+    session: AsyncSession = Depends(get_db_session)
+):
+    """Return the blast-radius / impact analysis for a completed review.
+
+    The impact data is computed by CodeGraphBuilder + ImpactAnalyzer during
+    the review pipeline and persisted into the ``pipeline_meta`` JSON column.
+    Returns an empty impact object if the review is not yet complete or the
+    impact data was not captured.
+    """
+    from sqlalchemy import select
+    from models.entities import Review
+
+    stmt = select(Review.pipeline_meta, Review.status).where(Review.id == review_id)
+    result = await session.execute(stmt)
+    row = result.one_or_none()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    pipeline_meta, status = row
+    impact_report = (pipeline_meta or {}).get("impact_report", {})
+
+    return {
+        "review_id": review_id,
+        "status": status,
+        "impact_report": impact_report,
+        # Convenience top-level fields for frontend rendering
+        "affected_files": impact_report.get("affected_files", []),
+        "blast_radius": impact_report.get("blast_radius", 0),
+        "changed_files": impact_report.get("changed_files", []),
+        "callers": impact_report.get("callers", {}),
+    }
+
+
 @router.post("/trigger")
 async def trigger_review_manually(
     request: ReviewTriggerRequest,
-    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db_session)
 ):
-    """Manually trigger a review via API."""
-    # Find PR first
-    # pr_repo = PullRequestRepo(session)
-    # This assumes PR is already in our DB (upserted by a webhook previously or poller)
-    # If not, we'd need to fetch from provider. For manual trigger we just enqueue it
+    """Manually trigger a review via API by repo + PR number.
     
-    # We use Celery if available, otherwise synchronous
+    Looks up the repository from the DB (or creates a placeholder entry),
+    then dispatches a Celery review task. Does NOT require the PR to have
+    been seen by a webhook first — the worker will fetch the diff from GitHub.
+    """
+    from workers.review_worker import run_review
+
+    # Resolve or create the repository entry
+    repo = await RepositoryRepo.get_by_full_name(
+        session, request.provider, request.repo_full_name
+    )
+    if repo is None:
+        # Auto-register the repo so we have a DB record
+        repo = await RepositoryRepo.upsert(
+            session=session,
+            provider=request.provider,
+            full_name=request.repo_full_name,
+        )
+        await session.commit()
+
+    # Build the same context dict the webhook handler produces
+    context = {
+        "provider": request.provider,
+        "project_path": request.repo_full_name,
+        "pr_number": request.pr_number,
+        "mr_iid": request.pr_number,
+        "mr_title": f"PR #{request.pr_number} (manual trigger)",
+        "mr_author": "manual",
+        "source_branch": "",
+        "target_branch": "main",
+        "is_draft": False,
+        "mr_url": "",
+        "last_commit_sha": "",
+    }
+
+    # Dispatch via Celery if available; otherwise run synchronously in bg
     from api.main import _celery_available
     if _celery_available():
-        from workers.review_worker import run_review
-        # We need PR ID from DB for run_review. Let's just pass the data we have.
-        # But wait, run_review takes pr_id (internal integer).
-        # We'll just return a message to use webhooks for now, or we can look it up.
-        # For simplicity, returning NotImplemented for manual trigger.
-        raise HTTPException(status_code=501, detail="Manual trigger requires passing internal PR ID. Use provider webhooks.")
+        task = run_review.delay(context)
+        return {
+            "status": "queued",
+            "task_id": task.id,
+            "provider": request.provider,
+            "repo": request.repo_full_name,
+            "pr_number": request.pr_number,
+            "message": "Review task queued. Connect to the SSE stream to follow progress.",
+        }
+
+    # Fallback: run in FastAPI background tasks (no Celery)
+    import asyncio
+    from workers.review_worker import _run_review_async
+    asyncio.get_event_loop().create_task(_run_review_async(context))
+    return {
+        "status": "started",
+        "provider": request.provider,
+        "repo": request.repo_full_name,
+        "pr_number": request.pr_number,
+        "message": "Review started (no Celery — running in-process).",
+    }
+
+
+@router.patch("/{review_id}/findings/{finding_id}/suppress", tags=["Findings"])
+async def suppress_finding(
+    review_id: int,
+    finding_id: int,
+    body: SuppressionRequest,
+    session: AsyncSession = Depends(get_db_session)
+):
+    """Suppress (dismiss) a finding — marks it as a false positive.
     
-    raise HTTPException(status_code=501, detail="Synchronous fallback not implemented in V3.")
+    Suppressed findings are retained in the DB but excluded from the
+    active findings count. This lets developers dismiss noise without
+    losing the audit trail.
+    """
+    from sqlalchemy import select
+    from models.entities import Finding
+
+    # Verify the finding belongs to this review
+    stmt = select(Finding).where(
+        Finding.id == finding_id,
+        Finding.review_id == review_id,
+    )
+    result = await session.execute(stmt)
+    finding = result.scalar_one_or_none()
+
+    if finding is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Finding {finding_id} not found on review {review_id}"
+        )
+
+    suppressed = await FindingRepo.suppress(session, finding_id, body.reason)
+    await session.commit()
+
+    if not suppressed:
+        raise HTTPException(status_code=500, detail="Failed to suppress finding")
+
+    return {
+        "id": finding_id,
+        "review_id": review_id,
+        "is_suppressed": True,
+        "suppression_reason": body.reason,
+        "message": "Finding suppressed successfully.",
+    }
+
+
+@router.delete("/{review_id}/findings/{finding_id}/suppress", tags=["Findings"])
+async def unsuppress_finding(
+    review_id: int,
+    finding_id: int,
+    session: AsyncSession = Depends(get_db_session)
+):
+    """Un-suppress a previously suppressed finding."""
+    from sqlalchemy import update as sa_update
+    from models.entities import Finding
+
+    stmt = (
+        sa_update(Finding)
+        .where(Finding.id == finding_id, Finding.review_id == review_id)
+        .values(is_suppressed=False, suppression_reason=None)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Finding {finding_id} not found on review {review_id}"
+        )
+
+    return {
+        "id": finding_id,
+        "review_id": review_id,
+        "is_suppressed": False,
+        "message": "Finding un-suppressed successfully.",
+    }
