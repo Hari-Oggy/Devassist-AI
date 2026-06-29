@@ -41,14 +41,20 @@ export function ReviewProgress({ reviewId, initialStatus, onComplete }: ReviewPr
         } else if (data.event_type === "STAGE_STARTED") {
           setActiveStage(data.stage ?? null);
         } else if (data.event_type === "STAGE_COMPLETED") {
-          setCompletedStages((prev) => [...prev, data.stage ?? ""]);
+          setCompletedStages((prev) => {
+            const stage = data.stage ?? "";
+            return prev.includes(stage) ? prev : [...prev, stage];
+          });
           setActiveStage(null);
         } else if (data.event_type === "REVIEW_COMPLETED") {
           setStatus("COMPLETED");
+          setCompletedStages(["distill", "reason", "validate"]);
+          setActiveStage(null);
           onComplete?.();
           eventSource.close();
         } else if (data.event_type === "REVIEW_FAILED") {
           setStatus("FAILED");
+          setActiveStage(null);
           eventSource.close();
         }
 
@@ -64,6 +70,42 @@ export function ReviewProgress({ reviewId, initialStatus, onComplete }: ReviewPr
 
     return () => eventSource.close();
   }, [reviewId, status, onComplete]);
+
+  // Hybrid auto-transition simulation when no real stage events are received
+  useEffect(() => {
+    if (status !== "RUNNING") return;
+
+    // If we detect any real stage events in the log, we disable simulation
+    const hasRealStageEvents = events.some(
+      (e) => e.event_type === "STAGE_STARTED" || e.event_type === "STAGE_COMPLETED"
+    );
+    if (hasRealStageEvents) return;
+
+    let timer: NodeJS.Timeout;
+
+    // Start with distill stage active
+    if (completedStages.length === 0 && activeStage !== "distill") {
+      setActiveStage("distill");
+    }
+
+    // After 3.5 seconds, complete distill and move to reasoning
+    if (activeStage === "distill") {
+      timer = setTimeout(() => {
+        setCompletedStages(["distill"]);
+        setActiveStage("reason");
+      }, 3500);
+    }
+
+    // After another 8 seconds, complete reasoning and move to validation
+    if (activeStage === "reason") {
+      timer = setTimeout(() => {
+        setCompletedStages(["distill", "reason"]);
+        setActiveStage("validate");
+      }, 8000);
+    }
+
+    return () => clearTimeout(timer);
+  }, [status, activeStage, completedStages, events]);
 
   const progress = completedStages.length / STAGES.length;
 

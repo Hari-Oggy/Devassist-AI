@@ -123,6 +123,7 @@ interface DashboardState {
   setReviewMode: (mode: string) => Promise<void>;
   addRepository: (data: { provider: string; full_name: string; default_branch: string }) => Promise<void>;
   removeRepository: (id: number) => Promise<void>;
+  removeReview: (id: number) => Promise<void>;
   clearConnectionError: () => void;
 }
 
@@ -261,5 +262,12 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   removeRepository: async (id: number) => {
     await apiFetch<unknown>(`/api/v3/repositories/${id}`, { method: "DELETE" });
     await get().fetchRepositories();
+  },
+
+  removeReview: async (id: number) => {
+    await apiFetch<unknown>(`/api/v3/reviews/${id}`, { method: "DELETE" });
+    set((state) => ({
+      reviews: state.reviews.filter((r) => r.id !== id)
+    }));
   },
 }));

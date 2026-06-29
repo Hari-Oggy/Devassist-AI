@@ -311,3 +311,25 @@ async def unsuppress_finding(
         "is_suppressed": False,
         "message": "Finding un-suppressed successfully.",
     }
+
+
+@router.delete("/{review_id}")
+async def delete_review(
+    review_id: int,
+    session: AsyncSession = Depends(get_db_session)
+):
+    """Delete a review from the database."""
+    from models.entities import Review
+    from sqlalchemy import select
+    
+    stmt = select(Review).where(Review.id == review_id)
+    result = await session.execute(stmt)
+    review = result.scalar_one_or_none()
+    
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+        
+    await session.delete(review)
+    await session.commit()
+    return {"message": f"Review {review_id} successfully deleted"}
+

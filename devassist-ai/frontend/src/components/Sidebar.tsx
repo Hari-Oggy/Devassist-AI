@@ -13,6 +13,7 @@ import {
   HelpCircle,
   Zap,
   ChevronRight,
+  Cable,
 } from "lucide-react";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -21,6 +22,7 @@ const navigation = [
   { name: "Reviews", href: "/reviews", icon: ListTodo },
   { name: "Repositories", href: "/repositories", icon: GitBranch },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
+  { name: "Integrations", href: "/integrations", icon: Cable },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
 
