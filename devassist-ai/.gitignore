@@ -12,5 +12,11 @@ build/
 .pids
 .agents/*/
 .pids/
+*.toml
 
-
+.ngrok_url
+.next/
+.agents/
+*lock
+*.done
+*.md

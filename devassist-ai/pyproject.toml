@@ -46,4 +46,5 @@ dependencies = [
     # YAML (for .devassist.yml per-repo config)
     "pyyaml>=6.0.0",
     "pyngrok>=8.1.2",
+    "docker>=7.1.0",
 ]

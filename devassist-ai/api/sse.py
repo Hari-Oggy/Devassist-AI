@@ -24,6 +24,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
+
 from core.logger import get_logger
 
 logger = get_logger("api.sse")
@@ -106,8 +107,8 @@ def _get_redis():
             r = _redis.Redis.from_url(
                 settings.REDIS_URL,
                 decode_responses=True,
-                socket_timeout=2,
                 socket_connect_timeout=2,
+                health_check_interval=30,
             )
             r.ping()
             _redis_client = r
@@ -245,6 +246,26 @@ class SSEManager:
             review_id, "finding_added",
             message=message,
             extra={"file": file_path, "line": line, "severity": severity},
+        )
+
+    async def publish_prologue_generated(self, review_id: int) -> None:
+        await self.publish(
+            review_id, "prologue_generated",
+            message="Prologue synthesis completed."
+        )
+
+    async def publish_chapter_started(self, review_id: int, chapter_id: int) -> None:
+        await self.publish(
+            review_id, "chapter_started",
+            message=f"Started reviewing chapter {chapter_id}",
+            extra={"chapter_id": chapter_id},
+        )
+
+    async def publish_chapter_completed(self, review_id: int, chapter_id: int) -> None:
+        await self.publish(
+            review_id, "chapter_completed",
+            message=f"Completed reviewing chapter {chapter_id}",
+            extra={"chapter_id": chapter_id},
         )
 
     # ── Subscribe (called from FastAPI SSE route) ──────────────────────

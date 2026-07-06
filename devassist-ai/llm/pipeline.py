@@ -68,7 +68,7 @@ class ReviewPipeline:
         validator: FindingValidator for Stage 3 (ensemble only).
     """
 
-    def __init__(self, router: LLMRouter, mode: Optional[str] = None):
+    def __init__(self, router: LLMRouter, mode: Optional[str] = None, mcp_tools: Optional[list] = None, tool_executor=None):
         """Initialize the review pipeline.
 
         Args:
@@ -78,7 +78,9 @@ class ReviewPipeline:
         """
         self.router = router
         self.pipeline_settings = get_pipeline_settings()
-        self.mode = mode or self.pipeline_settings.REVIEW_MODE
+        self.mode = self.pipeline_settings.REVIEW_MODE or mode 
+        self.mcp_tools = mcp_tools
+        self.tool_executor = tool_executor
 
         # Initialize ensemble components (lazy — only used if mode == 'ensemble')
         self._distiller: Optional[ContextDistiller] = None
@@ -191,6 +193,7 @@ class ReviewPipeline:
                 {"role": "user", "content": user_content},
             ],
             temperature=self.pipeline_settings.REASON_TEMPERATURE,
+            tools=self.mcp_tools,
             metadata={
                 "request_id": request_id,
                 "pr_number": pr_number,
@@ -199,7 +202,7 @@ class ReviewPipeline:
             },
         )
 
-        llm_response = self.router.generate(llm_request)
+        llm_response = self.router.generate(llm_request, tool_executor=self.tool_executor)
 
         # Build result
         result = PipelineResult(
@@ -438,6 +441,7 @@ class ReviewPipeline:
             ],
             temperature=self.pipeline_settings.REASON_TEMPERATURE,
             max_tokens=self.pipeline_settings.REASON_MAX_TOKENS,
+            tools=self.mcp_tools,
             metadata={
                 "request_id": request_id,
                 "pr_number": pr_number,
@@ -447,7 +451,7 @@ class ReviewPipeline:
             },
         )
 
-        llm_response = self.router.generate(llm_request)
+        llm_response = self.router.generate(llm_request, tool_executor=self.tool_executor)
         elapsed = time.time() - start_time
 
         stage_result = StageResult(

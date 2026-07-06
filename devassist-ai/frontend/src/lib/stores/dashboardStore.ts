@@ -81,6 +81,16 @@ export interface PipelineSettings {
   rag_enabled: boolean;
 }
 
+export interface MCPServer {
+  id: number;
+  name: string;
+  transport_type: string;
+  command: string | null;
+  args: string | null;
+  url: string | null;
+  is_active: boolean;
+}
+
 // ── Default safe values used as fallbacks on network error ──────────────────
 const DEFAULT_ANALYTICS: AnalyticsData = {
   reviews: { total: 0, completed: 0, failed: 0, running: 0 },
@@ -124,6 +134,11 @@ interface DashboardState {
   addRepository: (data: { provider: string; full_name: string; default_branch: string }) => Promise<void>;
   removeRepository: (id: number) => Promise<void>;
   removeReview: (id: number) => Promise<void>;
+  mcpServers: MCPServer[];
+  loadingMcp: boolean;
+  fetchMcpServers: () => Promise<void>;
+  addMcpServer: (data: { name: string; transport_type: string; command?: string; args?: string; url?: string }) => Promise<void>;
+  removeMcpServer: (id: number) => Promise<void>;
   clearConnectionError: () => void;
 }
 
@@ -142,6 +157,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   loadingPipeline: false,
   connectionError: null,
 
+  mcpServers: [],
+  loadingMcp: false,
   clearConnectionError: () => set({ connectionError: null }),
 
   fetchStatus: async () => {
@@ -268,6 +285,35 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     await apiFetch<unknown>(`/api/v3/reviews/${id}`, { method: "DELETE" });
     set((state) => ({
       reviews: state.reviews.filter((r) => r.id !== id)
+    }));
+  },
+
+  fetchMcpServers: async () => {
+    set({ loadingMcp: true });
+    try {
+      const data = await apiFetch<MCPServer[]>("/api/v3/integrations");
+      set({ mcpServers: Array.isArray(data) ? data : [], connectionError: null });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Cannot reach backend";
+      console.error("[store] fetchMcpServers:", msg);
+    } finally {
+      set({ loadingMcp: false });
+    }
+  },
+
+  addMcpServer: async (serverData) => {
+    await apiFetch<unknown>("/api/v3/integrations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(serverData),
+    });
+    await get().fetchMcpServers();
+  },
+
+  removeMcpServer: async (id: number) => {
+    await apiFetch<unknown>(`/api/v3/integrations/${id}`, { method: "DELETE" });
+    set((state) => ({
+      mcpServers: state.mcpServers.filter((s) => s.id !== id)
     }));
   },
 }));

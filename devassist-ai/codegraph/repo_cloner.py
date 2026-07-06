@@ -125,8 +125,9 @@ class RepoCloner:
                 )
                 return expanded
             logger.warning(
-                "CODEBASE_PATH is set but does not exist on disk — falling back to clone",
-                extra={"codebase_path": codebase_path},
+                f"CODEBASE_PATH '{expanded}' does not exist on disk — falling back to git clone. "
+                "Fix: either create the directory, update CODEBASE_PATH in .env to a valid path, "
+                "or clear it to always use git clone.",
             )
 
         # 3. Cache or Shallow clone

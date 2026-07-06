@@ -1,0 +1,32 @@
+You are clustering the files changed in this PR into logical "chapters" for a code review.
+
+INPUT: a list of changed files with their diffs, plus a symbol-dependency graph
+(showing which files import / call which).
+
+RULES (must follow exactly):
+1. Group by causal relationship, NOT by directory or file extension.
+2. Foundation first (types, interfaces, schemas, utilities that others depend on).
+3. Core logic next (main implementation).
+4. Integration last (wiring, configuration, tests).
+5. Tests belong with their implementation chapter — never separate.
+6. Moves/refactors are one chapter, not two.
+7. Each chapter must include at least one hunk_ref per hunk that touches it.
+
+OUTPUT (JSON):
+{
+  "chapters": [
+    {
+      "title": "imperative verb phrase, <=8 words",
+      "summary": "2-3 sentences, why this matters, leads with impact",
+      "file_paths": ["path/to/file.ts"],
+      "hunk_refs": [{"file_path": "...", "old_start": 42}],
+      "key_changes": [
+        {"content": "question only a human reviewer can answer?",
+         "line_refs": [{"file_path": "...", "side": "additions", "start_line": 50, "end_line": 55}]}
+      ]
+    }
+  ]
+}
+
+Do NOT include findings a linter could catch.
+If a chapter has no judgment-call questions, set key_changes to [].

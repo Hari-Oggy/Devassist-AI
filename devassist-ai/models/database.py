@@ -98,15 +98,13 @@ def _resolve_database_url() -> str:
 _DATABASE_URL: str = _resolve_database_url()
 
 
-# ── Engine (lazy) ─────────────────────────────────────────────────────
-_engine = None
-_session_factory = None
-
+# ── Engine (Thread-Local for asyncio.run in Celery) ─────────────────────
+import threading
+_thread_local = threading.local()
 
 def _get_engine():
-    """Return the singleton async engine, creating it on first call."""
-    global _engine
-    if _engine is None:
+    """Return the thread-local async engine, creating it on first call for this thread."""
+    if not hasattr(_thread_local, "engine") or _thread_local.engine is None:
         kwargs = {
             "echo": False,
             "pool_pre_ping": True,
@@ -118,21 +116,20 @@ def _get_engine():
                 "max_overflow": 20,
                 "pool_recycle": 300,
             })
-        _engine = create_async_engine(_DATABASE_URL, **kwargs)
-    return _engine
+        _thread_local.engine = create_async_engine(_DATABASE_URL, **kwargs)
+    return _thread_local.engine
 
 
 def _get_session_factory() -> async_sessionmaker[AsyncSession]:
-    """Return the singleton session factory, creating it on first call."""
-    global _session_factory
-    if _session_factory is None:
-        _session_factory = async_sessionmaker(
+    """Return the thread-local session factory, creating it on first call for this thread."""
+    if not hasattr(_thread_local, "session_factory") or _thread_local.session_factory is None:
+        _thread_local.session_factory = async_sessionmaker(
             bind=_get_engine(),
             class_=AsyncSession,
             expire_on_commit=False,
             autoflush=False,
         )
-    return _session_factory
+    return _thread_local.session_factory
 
 
 # Convenience alias — used by tests and the session context manager
@@ -179,6 +176,8 @@ async def get_db_session_context() -> AsyncGenerator[AsyncSession, None]:
 async def create_all_tables() -> None:
     """Create all tables defined in the ORM models."""
     from models import entities  # noqa: F401
+    from models import chapter  # noqa: F401
+    from models import comment_thread  # noqa: F401
     async with _get_engine().begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     backend = "SQLite" if _using_sqlite else "PostgreSQL"

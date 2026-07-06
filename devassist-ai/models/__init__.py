@@ -15,6 +15,8 @@ from models.entities import (
     FindingCategory,
     EventType,
 )
+from models.chapter import Chapter, KeyChange
+from models.comment_thread import CommentThread, Comment
 from models.repositories import (
     RepositoryRepo,
     PullRequestRepo,
@@ -28,6 +30,7 @@ __all__ = [
     "Base", "get_db_session",
     # Entities
     "Repository", "PullRequest", "Review", "Finding", "ReviewEvent",
+    "Chapter", "KeyChange", "CommentThread", "Comment",
     # Enums
     "ProviderType", "ReviewStatus", "FindingSeverity", "FindingCategory", "EventType",
     # Repositories

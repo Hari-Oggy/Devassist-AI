@@ -1,0 +1,590 @@
+name: DevAssist AI CI/CD
+
+on:
+  push:
+    branches: [main, master, release/*]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: "Deployment target"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "20"
+  UV_VERSION: "0.5.x"
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/devassist-ai-backend
+  FRONTEND_IMAGE: ghcr.io/${{ github.repository_owner }}/devassist-ai-frontend
+  CLI_IMAGE: ghcr.io/${{ github.repository_owner }}/devassist-ai-cli
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── STAGE 1: Code lint & format check ───────────────────────────────────────
+  lint-format:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python tooling
+        run: uv pip install --system ruff mypy bandit semgrep
+
+      - name: Ruff lint & format check
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: MyPy type check (backend)
+        run: mypy api core models schemas services workers llm agents analyzers
+        continue-on-error: true # tighten to false after type baseline is clean
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Lint frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+
+      - name: Type-check frontend
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Lint & type-check CLI
+        working-directory: cli
+        run: |
+          npm ci
+          npm run build
+
+  # ─── STAGE 2: Unit tests — backend ───────────────────────────────────────────
+  unit-tests-backend:
+    name: Unit Tests — Backend
+    runs-on: ubuntu-latest
+    needs: lint-format
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: devassist_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready -U postgres -d devassist_test
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/devassist_test
+      REDIS_URL: redis://localhost:6379/1
+      ENVIRONMENT: test
+      SECRET_KEY: test-secret-not-used-in-production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install backend dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Run database migrations
+        run: uv run alembic upgrade head
+
+      - name: Run backend unit tests
+        run: uv run pytest tests/unit -v --cov=src --cov-report=xml --cov-report=term --cov-fail-under=80
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: coverage.xml
+
+  # ─── STAGE 3: Unit tests — frontend ──────────────────────────────────────────
+  unit-tests-frontend:
+    name: Unit Tests — Frontend
+    runs-on: ubuntu-latest
+    needs: lint-format
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend unit tests
+        working-directory: frontend
+        run: npm test -- --coverage --coverageReporters=text --coverageReporters=lcov --watchAll=false
+        continue-on-error: true # remove once test suite is implemented
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: frontend/coverage/lcov.info
+
+  # ─── STAGE 4: Unit tests — CLI ───────────────────────────────────────────────
+  unit-tests-cli:
+    name: Unit Tests — CLI
+    runs-on: ubuntu-latest
+    needs: lint-format
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+
+      - name: Install CLI dependencies
+        working-directory: cli
+        run: npm ci
+
+      - name: Run CLI unit tests
+        working-directory: cli
+        run: npm test -- --coverage --coverageReporters=text --coverageReporters=lcov --watchAll=false
+        continue-on-error: true # remove once test suite is implemented
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-coverage
+          path: cli/coverage/lcov.info
+
+  # ─── STAGE 5: Integration tests ──────────────────────────────────────────────
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [unit-tests-backend, unit-tests-frontend, unit-tests-cli]
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: devassist_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready -U postgres -d devassist_test
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/devassist_test
+      REDIS_URL: redis://localhost:6379/1
+      ENVIRONMENT: test
+      SECRET_KEY: test-secret-not-used-in-production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install backend dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Run integration tests
+        run: uv run pytest tests/integration -v
+        continue-on-error: true # remove once integration suite is implemented
+
+  # ─── STAGE 6: SAST security scan ─────────────────────────────────────────────
+  sast-security:
+    name: SAST Security Scan
+    runs-on: ubuntu-latest
+    needs: lint-format
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install security scanners
+        run: uv pip install --system bandit semgrep
+
+      - name: Bandit scan (Python)
+        run: bandit -r . -f json -o bandit-report.json || true
+
+      - name: Semgrep scan
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/owasp-top-ten
+            p/cwe-top-25
+
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python, javascript, typescript
+
+      - name: Autobuild for CodeQL
+        uses: github/codeql-action/autobuild@v3
+
+      - name: CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+
+  # ─── STAGE 7: Dependency vulnerability audit ─────────────────────────────────
+  dependency-vuln-audit:
+    name: Dependency Vulnerability Audit
+    runs-on: ubuntu-latest
+    needs: lint-format
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install pip-audit
+        run: uv pip install --system pip-audit
+
+      - name: Audit Python dependencies
+        run: |
+          uv export --format requirements-txt > requirements-ci.txt
+          pip-audit -r requirements-ci.txt --format=json -o pip-audit-report.json || true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Audit frontend dependencies
+        working-directory: frontend
+        run: npm audit --audit-level=high || true
+
+      - name: Audit CLI dependencies
+        working-directory: cli
+        run: npm audit --audit-level=high || true
+
+      - name: Upload pip-audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: pip-audit-report.json
+
+  # ─── STAGE 8: Build & container image ────────────────────────────────────────
+  build-and-push-images:
+    name: Build & Push Container Images
+    runs-on: ubuntu-latest
+    needs:
+      - integration-tests
+      - sast-security
+      - dependency-vuln-audit
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      backend_tag: ${{ steps.meta-backend.outputs.tags }}
+      frontend_tag: ${{ steps.meta-frontend.outputs.tags }}
+      cli_tag: ${{ steps.meta-cli.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Backend image metadata
+        id: meta-backend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.BACKEND_IMAGE }}
+          tags: |
+            type=sha,prefix=,suffix=,format=short
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build & push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta-backend.outputs.tags }}
+          labels: ${{ steps.meta-backend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Frontend image metadata
+        id: meta-frontend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.FRONTEND_IMAGE }}
+          tags: |
+            type=sha,prefix=,suffix=,format=short
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build & push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ steps.meta-frontend.outputs.tags }}
+          labels: ${{ steps.meta-frontend.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: CLI image metadata
+        id: meta-cli
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.CLI_IMAGE }}
+          tags: |
+            type=sha,prefix=,suffix=,format=short
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build & push CLI image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./cli
+          file: ./cli/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-cli.outputs.tags }}
+          labels: ${{ steps.meta-cli.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─── STAGE 9: Push to staging ────────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build-and-push-images
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event.inputs.deploy_target == 'staging'
+    environment:
+      name: staging
+      url: https://staging.devassist.example.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to staging host
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_HOST: ${{ vars.STAGING_HOST }}
+          STAGING_USER: ${{ vars.STAGING_USER }}
+          BACKEND_TAG: ${{ needs.build-and-push-images.outputs.backend_tag }}
+          FRONTEND_TAG: ${{ needs.build-and-push-images.outputs.frontend_tag }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "$STAGING_USER@$STAGING_HOST" <<EOF
+            set -e
+            cd /opt/devassist-staging
+            echo "BACKEND_IMAGE=${{ env.BACKEND_IMAGE }}" > .env.deploy
+            echo "BACKEND_TAG=$BACKEND_TAG" >> .env.deploy
+            echo "FRONTEND_IMAGE=${{ env.FRONTEND_IMAGE }}" >> .env.deploy
+            echo "FRONTEND_TAG=$FRONTEND_TAG" >> .env.deploy
+            docker compose -f docker-compose.staging.yml pull
+            docker compose -f docker-compose.staging.yml up -d --remove-orphans
+            docker compose -f docker-compose.staging.yml ps
+          EOF
+
+  # ─── STAGE 10: E2E tests on staging ──────────────────────────────────────────
+  e2e-tests-staging:
+    name: E2E Tests on Staging
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Playwright
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps
+
+      - name: Run E2E tests against staging
+        working-directory: frontend
+        env:
+          BASE_URL: https://staging.devassist.example.com
+        run: npx playwright test
+        continue-on-error: true # remove once E2E suite is implemented
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+
+  # ─── STAGE 11: Performance benchmark (smoke) ─────────────────────────────────
+  performance-smoke:
+    name: Performance Smoke Test
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run k6 smoke test
+        uses: grafana/k6-action@v0.3.1
+        with:
+          filename: performance/smoke.js
+        env:
+          BASE_URL: https://staging.devassist.example.com
+        continue-on-error: true # remove once k6 script is implemented
+
+  # ─── STAGE 12: Manual approval gate → production ─────────────────────────────
+  # This job exists only to model the GitHub Environment protection rule that
+  # requires a manual approver. The environment "production" must be configured
+  # in the repository with "Required reviewers" set.
+  approve-production:
+    name: Production Approval Gate
+    runs-on: ubuntu-latest
+    needs: [e2e-tests-staging, performance-smoke]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event.inputs.deploy_target == 'production'
+    environment:
+      name: production
+      url: https://devassist.example.com
+    steps:
+      - name: Approval checkpoint
+        run: echo "Production deployment approved by ${{ github.actor }}"
+
+  # ─── STAGE 13: Blue/green deploy to production + smoke + rollback ────────────
+  deploy-production:
+    name: Blue/Green Deploy to Production
+    runs-on: ubuntu-latest
+    needs: approve-production
+    environment:
+      name: production
+      url: https://devassist.example.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Production deployment (blue/green)
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PROD_HOST: ${{ vars.PRODUCTION_HOST }}
+          PROD_USER: ${{ vars.PRODUCTION_USER }}
+          BACKEND_TAG: ${{ needs.build-and-push-images.outputs.backend_tag }}
+          FRONTEND_TAG: ${{ needs.build-and-push-images.outputs.frontend_tag }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" <<'EOF'
+            set -e
+            cd /opt/devassist-prod
+            source ./scripts/blue-green-deploy.sh
+            deploy "$BACKEND_TAG" "$FRONTEND_TAG"
+          EOF
+
+      - name: Production smoke tests
+        run: |
+          curl -fsS https://devassist.example.com/api/v3/status || exit 1
+          curl -fsS https://devassist.example.com/api/v3/health || exit 1
+        timeout-minutes: 5
+
+      - name: Rollback on failure
+        if: failure()
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PROD_HOST: ${{ vars.PRODUCTION_HOST }}
+          PROD_USER: ${{ vars.PRODUCTION_USER }}
+        run: |
+          echo "Smoke tests failed — initiating rollback"
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key "$PROD_USER@$PROD_HOST" <<'EOF'
+            set -e
+            cd /opt/devassist-prod
+            source ./scripts/blue-green-deploy.sh
+            rollback
+          EOF

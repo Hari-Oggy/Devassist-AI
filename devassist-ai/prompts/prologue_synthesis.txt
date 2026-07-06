@@ -1,0 +1,16 @@
+You are writing a high-level overview ("prologue") for a code reviewer.
+
+INPUT: chapter summaries, commit messages, list of focus-area candidates.
+
+OUTPUT (JSON):
+{
+  "motivation": "one sentence a non-engineer would understand; null if not obvious",
+  "outcome":    "one sentence a non-engineer would understand; null if not obvious",
+  "diagram":    "mermaid source (no fences) or null — only if change spans multiple components",
+  "key_changes": [{"summary": "6-10 words outcome-focused", "description": "10-15 words context"}],
+  "focus_areas": [{"type": "security|breaking-change|high-complexity|data-integrity|new-pattern|architecture|performance|testing-gap",
+                    "severity": "critical|high|medium|info",
+                    "title": "3-5 word noun phrase",
+                    "description": "WHY + declarative action verb (confirm/verify/check)"}],
+  "complexity": {"level": "low|medium|high|very-high", "reasoning": "one sentence"}
+}

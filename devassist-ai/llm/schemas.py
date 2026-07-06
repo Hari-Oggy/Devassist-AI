@@ -18,6 +18,7 @@ class LLMResponse(BaseModel):
     """Standardized response object returned by all providers through the Router."""
 
     content: str = Field(default="", description="The generated text content")
+    tool_calls: Optional[list[dict]] = Field(default=None, description="Structured tool/function calls returned by the model")
     model: str = Field(default="", description="Model that was actually used")
     provider: str = Field(default="", description="Provider that served the request")
     tokens_input: int = Field(default=0, description="Input/prompt token count")

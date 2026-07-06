@@ -30,6 +30,7 @@ from models.entities import (
     Review,
     ReviewEvent,
     ReviewStatus,
+    MCPServer,
 )
 
 logger = get_logger("models.repositories")
@@ -228,6 +229,7 @@ class ReviewRepo:
         provider_used: str = "",
         raw_summary: Optional[str] = None,
         pipeline_meta: Optional[dict] = None,
+        prologue_json: Optional[dict] = None,
     ) -> None:
         stmt = (
             update(Review)
@@ -246,6 +248,7 @@ class ReviewRepo:
                 provider_used=provider_used,
                 raw_summary=raw_summary,
                 pipeline_meta=pipeline_meta,
+                prologue_json=prologue_json,
             )
         )
         await session.execute(stmt)
@@ -396,3 +399,46 @@ class ReviewEventRepo:
         )
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+
+# ── MCPServer Repository ──────────────────────────────────────────────
+
+class MCPServerRepo:
+    """Data access methods for the MCPServer entity."""
+
+    @staticmethod
+    async def get_by_id(session: AsyncSession, server_id: int) -> Optional[MCPServer]:
+        return await session.get(MCPServer, server_id)
+
+    @staticmethod
+    async def get_by_name(session: AsyncSession, name: str) -> Optional[MCPServer]:
+        stmt = select(MCPServer).where(MCPServer.name == name)
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def get_all_active(session: AsyncSession) -> list[MCPServer]:
+        stmt = select(MCPServer).where(MCPServer.is_active.is_(True))
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def create(
+        session: AsyncSession,
+        name: str,
+        transport_type: str = "stdio",
+        command: Optional[str] = None,
+        args: Optional[str] = None,
+        url: Optional[str] = None,
+    ) -> MCPServer:
+        server = MCPServer(
+            name=name,
+            transport_type=transport_type,
+            command=command,
+            args=args,
+            url=url,
+        )
+        session.add(server)
+        await session.flush()
+        return server
+

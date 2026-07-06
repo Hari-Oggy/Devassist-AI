@@ -43,6 +43,10 @@ from api.routes.reviews import router as reviews_router
 from api.routes.events import router as events_router
 from api.routes.analytics import router as analytics_router
 from api.routes.settings import router as settings_router
+from api.routes.integrations import router as integrations_router
+from api.routes.chapters import router as chapters_router
+from api.routes.comments import router as comments_router
+from api.routes.local_review import router as local_review_router
 from api.webhook import router as github_webhook_router
 from providers.gitlab_webhook import router as gitlab_webhook_router
 
@@ -51,6 +55,10 @@ app.include_router(reviews_router, prefix="/api/v3")
 app.include_router(events_router, prefix="/api/v3")
 app.include_router(analytics_router, prefix="/api/v3")
 app.include_router(settings_router, prefix="/api/v3")
+app.include_router(integrations_router, prefix="/api/v3")
+app.include_router(chapters_router, prefix="/api/v3")
+app.include_router(comments_router, prefix="/api/v3")
+app.include_router(local_review_router, prefix="/api/v3")
 app.include_router(github_webhook_router, prefix="/api/v3/github")
 app.include_router(gitlab_webhook_router, prefix="/api/v3/gitlab")
 
@@ -84,17 +92,35 @@ async def startup_event():
     logger.info(f"DevAssist AI API v3.0 running on http://{settings.API_HOST}:{settings.API_PORT}")
     
     # --- Pyngrok Integration ---
-    # --- Pyngrok Integration ---
     try:
         from pyngrok import ngrok
         if settings.NGROK_AUTH_TOKEN:
             ngrok.set_auth_token(settings.NGROK_AUTH_TOKEN)
         else:
-            logger.warning(f"Ngrok tunnel need auth_token ")   
-        ngrok.kill()
-        public_url = ngrok.connect(settings.API_PORT).public_url
-        logger.info(f"ngrok tunnel established at: {public_url}")
-        logger.info(f"Use {public_url}/api/v3/github/webhook for GitHub Webhooks!")
+            logger.warning("NGROK_AUTH_TOKEN not set — tunnel may be rate-limited")
+        ngrok.kill()  # Kill any stale tunnels from previous runs
+        tunnel = ngrok.connect(settings.API_PORT)
+        public_url = tunnel.public_url
+        webhook_url = f"{public_url}/api/v3/github/webhook"
+
+        logger.info("=" * 60)
+        logger.info(f"ngrok tunnel active: {public_url}")
+        logger.info(f"GitHub Webhook URL : {webhook_url}")
+        logger.info("ACTION REQUIRED: Update your GitHub repo webhook to the URL above")
+        logger.info("  Settings → Webhooks → Edit → Payload URL")
+        logger.info("=" * 60)
+
+        # Save URL to file so it's easy to find after log scrolls away
+        try:
+            import pathlib
+            url_file = pathlib.Path(".ngrok_url")
+            url_file.write_text(
+                f"Webhook URL: {webhook_url}\nBase URL: {public_url}\n",
+                encoding="utf-8",
+            )
+            logger.info(f"ngrok URL saved to .ngrok_url")
+        except Exception:
+            pass
     except Exception as e:
         logger.warning(f"Failed to start ngrok tunnel: {e}")
     # ---------------------------

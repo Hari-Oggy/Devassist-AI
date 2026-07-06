@@ -4,69 +4,9 @@ and build intelligent fallback chains.
 """
 
 MODEL_REGISTRY: dict[str, dict] = {
-    # --- OpenAI ---
-    "gpt-4o": {
-        "provider": "openai",
-        "context_window": 128000,
-        "supports_tools": True,
-        "supports_json": True,
-        "supports_vision": True,
-    },
-    "gpt-4o-mini": {
-        "provider": "openai",
-        "context_window": 128000,
-        "supports_tools": True,
-        "supports_json": True,
-        "supports_vision": True,
-    },
 
-    # --- Anthropic ---
-    "claude-3-5-sonnet-20241022": {
-        "provider": "anthropic",
-        "context_window": 200000,
-        "supports_tools": True,
-        "supports_json": True,
-        "supports_vision": True,
-    },
-    "claude-3-haiku-20240307": {
-        "provider": "anthropic",
-        "context_window": 200000,
-        "supports_tools": True,
-        "supports_json": True,
-        "supports_vision": True,
-    },
 
-    # --- Gemini ---
-    "gemini-2.5-pro": {
-        "provider": "gemini",
-        "context_window": 1048576,
-        "supports_tools": True,
-        "supports_json": True,
-        "supports_vision": True,
-    },
-    "gemini-2.5-flash": {
-        "provider": "gemini",
-        "context_window": 1048576,
-        "supports_tools": True,
-        "supports_json": True,
-        "supports_vision": True,
-    },
-    "gemini-2.0-flash": {
-        "provider": "gemini",
-        "context_window": 1048576,
-        "supports_tools": True,
-        "supports_json": True,
-        "supports_vision": True,
-    },
-    "gemini-3-flash-preview": {
-        "provider": "gemini",
-        "context_window": 1048576,
-        "supports_tools": True,
-        "supports_json": True,
-        "supports_vision": True,
-    },
-
-    # --- NVIDIA ---
+      # --- NVIDIA ---
     "meta/llama-3.1-70b-instruct": {
         "provider": "nvidia",
         "context_window": 128000,
@@ -77,6 +17,34 @@ MODEL_REGISTRY: dict[str, dict] = {
     "meta/llama-3.1-8b-instruct": {
         "provider": "nvidia",
         "context_window": 128000,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": False,
+    },
+    "deepseek-ai/deepseek-v4-pro": {
+        "provider": "nvidia",
+        "context_window": 128000,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": False,
+    },
+    "z-ai/glm-5.1": {
+        "provider": "nvidia",
+        "context_window": 128000,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": False,
+    },
+    "z-ai/glm-5.2": {
+        "provider": "nvidia",
+        "context_window": 128000,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": False,
+    },
+    "minimaxai/minimax-m3": {
+        "provider": "nvidia",
+        "context_window": 40960,
         "supports_tools": True,
         "supports_json": True,
         "supports_vision": False,
@@ -127,6 +95,69 @@ MODEL_REGISTRY: dict[str, dict] = {
         "supports_json": False,
         "supports_vision": False,
     },
+    # --- OpenAI ---
+    "gpt-4o": {
+        "provider": "openai",
+        "context_window": 128000,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": True,
+    },
+    "gpt-4o-mini": {
+        "provider": "openai",
+        "context_window": 128000,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": True,
+    },
+
+    # # --- Anthropic ---
+    # "claude-3-5-sonnet-20241022": {
+    #     "provider": "anthropic",
+    #     "context_window": 200000,
+    #     "supports_tools": True,
+    #     "supports_json": True,
+    #     "supports_vision": True,
+    # },
+    # "claude-3-haiku-20240307": {
+    #     "provider": "anthropic",
+    #     "context_window": 200000,
+    #     "supports_tools": True,
+    #     "supports_json": True,
+    #     "supports_vision": True,
+    # },
+
+    # --- Gemini ---
+    "gemini-2.5-pro": {
+        "provider": "gemini",
+        "context_window": 1048576,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": True,
+    },
+    "gemini-2.5-flash": {
+        "provider": "gemini",
+        "context_window": 1048576,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": True,
+    },
+    "gemini-2.0-flash": {
+        "provider": "gemini",
+        "context_window": 1048576,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": True,
+    },
+    "gemini-3-flash-preview": {
+        "provider": "gemini",
+        "context_window": 1048576,
+        "supports_tools": True,
+        "supports_json": True,
+        "supports_vision": True,
+    },
+
+  
 }
 
 
@@ -179,10 +210,6 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
 
 def get_model_info(model_name: str) -> dict | None:
     """Returns capability info for a model, or None if not found."""
-    if model_name in MODEL_REGISTRY:
-        return MODEL_REGISTRY[model_name]
-    
-    # Fallback for settings-configured and pipeline settings-configured models
     from core.config import get_settings
     from core.pipeline_config import get_pipeline_settings
     
@@ -198,11 +225,21 @@ def get_model_info(model_name: str) -> dict | None:
         configured_models.append(pipe_settings.REASON_MODEL)
     if pipe_settings.VALIDATE_MODEL:
         configured_models.append(pipe_settings.VALIDATE_MODEL)
-        
+
+    info = None
+    if model_name in MODEL_REGISTRY:
+        info = dict(MODEL_REGISTRY[model_name])
+    
     if model_name in configured_models:
         provider = settings.LLM_PROVIDER
+        
+        # If we have base info, override its provider with the user's explicit choice
+        if info:
+            info["provider"] = provider
+            return info
+            
         lower_name = model_name.lower()
-        valid_providers = ["openai", "gemini", "nvidia", "anthropic", "openrouter", "local"]
+        valid_providers = ["nvidia","openrouter", "local","openai", "gemini",  "anthropic" ]
         
         # Check if the prefix contains a valid provider
         import re
@@ -228,7 +265,7 @@ def get_model_info(model_name: str) -> dict | None:
             "supports_vision": False,
         }
         
-    return None
+    return info
 
 
 def get_fallback_chain(task_type: str) -> list[str]:

@@ -26,6 +26,8 @@ from models import entities  # noqa: F401  — side-effect: registers ORM models
 
 # Alembic Config object — access to alembic.ini values
 config = context.config
+from models.database import _DATABASE_URL
+config.set_main_option("sqlalchemy.url", _DATABASE_URL)
 
 # Set up Python logging from alembic.ini
 if config.config_file_name is not None:
@@ -41,7 +43,7 @@ def run_migrations_offline() -> None:
     This is useful for generating migration scripts for review before
     applying them to a production database.
     """
-    url = config.get_main_option("sqlalchemy.url")
+    url = _DATABASE_URL
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -72,6 +74,7 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        url=_DATABASE_URL,
     )
 
     async with connectable.connect() as connection:

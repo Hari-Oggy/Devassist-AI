@@ -1,7 +1,5 @@
-import { redirect } from "next/navigation";
+import { SignIn } from "@clerk/nextjs";
 
-// Auth removed — this is a no-auth self-hosted tool.
-// Redirect to dashboard directly.
-export default function SignInPage() {
-  redirect("/dashboard");
+export default function Page() {
+  return <SignIn />;
 }

@@ -11,6 +11,7 @@ logger = get_logger("agents.github_tool")
 class GitHubClient:
     def __init__(self, repo_name: str = None, installation_id: int = None):
         settings = get_settings()
+        # Prefer explicit arg; only fall back to .env when nothing is supplied
         self.repo_name = repo_name or settings.GITHUB_REPO
         if not self.repo_name or self.repo_name == "owner/repository-name":
             raise ValueError("GITHUB_REPO is missing or not configured. Please set owner/repository-name in .env.")
@@ -281,9 +282,16 @@ class GitHubClient:
 
 
 _github_client_instance = None
+_github_client_key: tuple = (None, None)  # (repo_name, installation_id)
 
 def get_github_client(repo_name: str = None, installation_id: int = None) -> GitHubClient:
-    global _github_client_instance
-    if _github_client_instance is None or (repo_name and getattr(_github_client_instance, 'repo_name', None) != repo_name):
+    """Return a GitHubClient, refreshing the singleton when repo or installation changes."""
+    global _github_client_instance, _github_client_key
+    settings = get_settings()
+    # Resolve the effective repo name so we can key correctly
+    effective_repo = repo_name or settings.GITHUB_REPO
+    cache_key = (effective_repo, installation_id)
+    if _github_client_instance is None or _github_client_key != cache_key:
         _github_client_instance = GitHubClient(repo_name, installation_id=installation_id)
+        _github_client_key = cache_key
     return _github_client_instance

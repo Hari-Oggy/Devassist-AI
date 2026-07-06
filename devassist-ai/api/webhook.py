@@ -93,7 +93,14 @@ async def _trigger_review(pr_number: int, action: str, context: dict):
         try:
             from workers.review_worker import _run_review_async
             # Run in the background of the FastAPI event loop to not block the webhook response
-            asyncio.create_task(_run_review_async(context))
+            task = asyncio.create_task(_run_review_async(context))
+            # Hold a reference so GC doesn't cancel it; log on completion
+            def _on_done(t: asyncio.Task):
+                if t.exception():
+                    logger.error(f"PR #{pr_number} fallback review task raised: {t.exception()}")
+                else:
+                    logger.info(f"PR #{pr_number} fallback review task completed")
+            task.add_done_callback(_on_done)
             return {"status": "fallback_queued", "pr_number": pr_number}
         except Exception as fallback_err:
             logger.error(f"Fallback review error: {fallback_err}")

@@ -168,6 +168,70 @@ async def get_review_impact(
         "callers": impact_report.get("callers", {}),
     }
 
+@router.get("/{review_id}/prologue")
+async def get_review_prologue(
+    review_id: int,
+    session: AsyncSession = Depends(get_db_session)
+):
+    from sqlalchemy import select
+    from models.entities import Review
+
+    stmt = select(Review.prologue_json, Review.status).where(Review.id == review_id)
+    result = await session.execute(stmt)
+    row = result.one_or_none()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Review not found")
+        
+    prologue_json, status = row
+    if not prologue_json:
+        # Return empty object if prologue hasn't been generated yet
+        return {}
+
+    return prologue_json
+
+@router.get("/{review_id}/chapters")
+async def get_review_chapters(
+    review_id: int,
+    session: AsyncSession = Depends(get_db_session)
+):
+    from sqlalchemy import select
+    from models.entities import Review
+
+    stmt = select(Review.pipeline_meta, Review.status).where(Review.id == review_id)
+    result = await session.execute(stmt)
+    row = result.one_or_none()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Review not found")
+        
+    pipeline_meta, status = row
+    if not pipeline_meta or "chapters" not in pipeline_meta:
+        return []
+
+    return pipeline_meta["chapters"]
+
+@router.get("/{review_id}/documentation")
+async def get_review_documentation(
+    review_id: int,
+    session: AsyncSession = Depends(get_db_session)
+):
+    from sqlalchemy import select
+    from models.entities import Review
+
+    stmt = select(Review.pipeline_meta, Review.status).where(Review.id == review_id)
+    result = await session.execute(stmt)
+    row = result.one_or_none()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Review not found")
+        
+    pipeline_meta, status = row
+    if not pipeline_meta or "documentation" not in pipeline_meta:
+        return []
+
+    return pipeline_meta["documentation"]
+
 
 @router.post("/trigger")
 async def trigger_review_manually(
@@ -210,9 +274,9 @@ async def trigger_review_manually(
         "last_commit_sha": "",
     }
 
-    # Dispatch via Celery if available; otherwise run synchronously in bg
-    from api.main import _celery_available
-    if _celery_available():
+    # Dispatch via Celery if available; otherwise run in-process bg task
+    try:
+        from workers.review_worker import run_review
         task = run_review.delay(context)
         return {
             "status": "queued",
@@ -222,18 +286,21 @@ async def trigger_review_manually(
             "pr_number": request.pr_number,
             "message": "Review task queued. Connect to the SSE stream to follow progress.",
         }
-
-    # Fallback: run in FastAPI background tasks (no Celery)
-    import asyncio
-    from workers.review_worker import _run_review_async
-    asyncio.get_event_loop().create_task(_run_review_async(context))
-    return {
-        "status": "started",
-        "provider": request.provider,
-        "repo": request.repo_full_name,
-        "pr_number": request.pr_number,
-        "message": "Review started (no Celery — running in-process).",
-    }
+    except Exception as celery_err:
+        import asyncio
+        from workers.review_worker import _run_review_async
+        task = asyncio.get_event_loop().create_task(_run_review_async(context))
+        def _on_done(t):
+            if t.exception():
+                import logging; logging.getLogger("api.reviews").error(f"Manual trigger task failed: {t.exception()}")
+        task.add_done_callback(_on_done)
+        return {
+            "status": "started",
+            "provider": request.provider,
+            "repo": request.repo_full_name,
+            "pr_number": request.pr_number,
+            "message": f"Review started in-process (Celery unavailable: {celery_err}).",
+        }
 
 
 @router.patch("/{review_id}/findings/{finding_id}/suppress", tags=["Findings"])

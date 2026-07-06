@@ -49,11 +49,12 @@ def run_review(self, context: dict[str, Any]) -> dict:
         context: Review context dict (from webhook).
     """
     # Reset the SQLAlchemy engine singleton so it binds to the fresh
-    # event loop that asyncio.run() creates. Without this, on Windows the
-    # engine holds a reference to a closed loop from a previous run.
+    # event loop that asyncio.run() creates in this thread.
     from models import database as _db
-    _db._engine = None
-    _db._session_factory = None
+    if hasattr(_db._thread_local, "engine"):
+        _db._thread_local.engine = None
+    if hasattr(_db._thread_local, "session_factory"):
+        _db._thread_local.session_factory = None
 
     return asyncio.run(_run_review_async(context))
 
@@ -115,7 +116,7 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                 event_type=EventType.REVIEW_STARTED,
                 message="Review started."
             )
-            await sse_manager.publish_review_started(review_id)
+            await sse_manager.publish_review_started(review_id, mode=get_pipeline_settings().REVIEW_MODE)
             
             # 4. Mark Running
             await ReviewRepo.mark_running(session, review_id)
@@ -219,7 +220,40 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
             logger.info(f"Fetched {len(reviewable_files)} reviewable files from GitHub PR #{mr_iid}")
 
         system_prompt = load_prompt("review_prompt")
-        pipeline = ReviewPipeline(router=LLMRouter())
+        
+        # Initialize MCP Client Manager and load active servers from database
+        from services.mcp_client import SyncMCPClientManager
+        from models.entities import MCPServer
+        from sqlalchemy import select
+        
+        mcp_manager = SyncMCPClientManager()
+        try:
+            async with get_db_session_context() as session:
+                stmt = select(MCPServer).where(MCPServer.is_active == True)
+                res = await session.execute(stmt)
+                active_servers = res.scalars().all()
+                config_list = [
+                    {
+                        "name": s.name,
+                        "command": s.command,
+                        "args": s.args
+                    } for s in active_servers
+                ]
+                mcp_manager.load_from_config(config_list)
+            mcp_tools = mcp_manager.get_combined_tools()
+        except Exception as mcp_err:
+            logger.error(f"Failed to load MCP servers: {mcp_err}")
+            mcp_tools = []
+
+        def tool_executor(name: str, arguments: dict) -> dict:
+            return mcp_manager.call_tool(name, arguments)
+
+        pipeline = ReviewPipeline(
+            router=LLMRouter(),
+            mcp_tools=mcp_tools if mcp_tools else None,
+            tool_executor=tool_executor if mcp_tools else None
+            
+        )
 
         all_findings = []
         total_tokens_input = 0
@@ -362,7 +396,7 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                 except Exception as e:
                     logger.warning(f"Temporary RAG indexing failed: {e}")
 
-            for file_data in reviewable_files:
+            def process_file(file_data):
                 # Retrieve context from RAG
                 filename = file_data.get("filename", "")
                 patch = file_data.get("patch", "")
@@ -388,7 +422,7 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                         lines.append(f"[{lf.tool}] line {lf.line}: {sev} ({lf.rule_id}) {lf.message}")
                     file_lint_result = "\n".join(lines)
 
-                result = pipeline.run(
+                return pipeline.run(
                     file_data=file_data,
                     system_prompt=system_prompt,
                     impact_report=impact_report,
@@ -396,7 +430,14 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                     context=rag_context,
                     lint_result=file_lint_result,
                 )
-                results.append(result)
+
+            import concurrent.futures
+            max_concurrency = 5  # Limit concurrent API calls to avoid immediate rate limits
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrency) as pool:
+                # pool.map guarantees the results array is in the same order as reviewable_files
+                results = list(pool.map(process_file, reviewable_files))
+            
+            for result in results:
                 all_findings.extend(result.findings)
                 total_tokens_input += result.total_tokens_input
                 total_tokens_output += result.total_tokens_output
@@ -459,7 +500,7 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                                 if not already_exists:
                                     body_text = f"**{fd['severity'].upper()}** ({fd['category']}): {fd['comment']}"
                                     if fd.get("code_fix"):
-                                        body_text += f"\n\n```python\n{fd['code_fix']}\n```"
+                                        body_text += f"\n\n```suggestion\n{fd['code_fix']}\n```"
                                     marked_body = f"{body_text}\n\n<!-- devassist-ai -->"
                                     
                                     try:
@@ -582,6 +623,68 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                 except Exception as e:
                     logger.error(f"Failed to post comments to GitHub: {e}")
 
+            # 7. Generate Prologue & Chapters (Ensemble mode only)
+            prologue_dict = None
+            db_chapters = []   # guaranteed-defined before pipeline_meta build
+            docs_out = []      # guaranteed-defined before pipeline_meta build
+            if pipeline.mode == "ensemble":
+                try:
+                    from llm.chapter_clusterer import ChapterClusterer
+                    from llm.prologue_synthesizer import PrologueSynthesizer
+                    from models.chapter import Chapter
+
+                    logger.info("Starting Chapter Clustering & Prologue Synthesis")
+                    
+                    clusterer = ChapterClusterer(pipeline.router)
+                    chapters_out = await clusterer.cluster(reviewable_files, impact_report)
+                    
+                    # Convert to DB models and save
+                    for c_out in chapters_out:
+                        chapter = Chapter(
+                            review_id=review_id,
+                            external_id=str(c_out.id),
+                            order=c_out.order,
+                            title=c_out.title,
+                            summary=c_out.summary,
+                        )
+                        session.add(chapter)
+                        db_chapters.append(c_out.dict())
+                    
+                    synthesizer = PrologueSynthesizer(pipeline.router)
+                    commits = []
+                    if provider == ProviderType.GITHUB and 'gh_repo' in locals():
+                        gh_pr = gh_repo.get_pull(int(mr_iid))
+                        commits = [c.commit.message for c in gh_pr.get_commits()]
+                    
+                    prologue_out = await synthesizer.synthesize(
+                        chapters=db_chapters,
+                        commit_messages=commits,
+                        pr_title=context.get("mr_title", ""),
+                        pr_body=""
+                    )
+                    prologue_dict = prologue_out.model_dump()
+                    
+                    logger.info(
+                        "Successfully generated Prologue and Chapters — "
+                        "diagram=%s, focus_areas=%d, complexity=%s",
+                        "present" if prologue_dict.get("diagram") else "null",
+                        len(prologue_dict.get("focus_areas", [])),
+                        prologue_dict.get("complexity", {}).get("level", "unknown")
+                    )
+                    
+                    try:
+                        from llm.documentation_synthesizer import DocumentationSynthesizer
+                        logger.info("Starting Documentation Synthesis")
+                        doc_synth = DocumentationSynthesizer(pipeline.router)
+                        docs_out = await doc_synth.generate_docs(reviewable_files)
+                        logger.info(f"Generated docs for {len(docs_out)} files")
+                    except Exception as ed:
+                        logger.error(f"Failed to synthesize documentation: {ed}")
+                        docs_out = []
+                        
+                except Exception as e:
+                    logger.error(f"Failed to synthesize prologue/chapters: {e}")
+
             await ReviewRepo.mark_completed(
                 session=session, 
                 review_id=review_id, 
@@ -595,10 +698,15 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                 model_used=model_used,
                 provider_used=provider_used,
                 raw_summary=raw_summary,
+                prologue_json=prologue_dict,
                 pipeline_meta={
                     "mode": pipeline.mode,
                     "files_count": len(reviewable_files),
                     "impact_report": impact_report,  # persist blast-radius for frontend
+                    "chapters": db_chapters,
+                    "documentation": docs_out,
+                    # Preserve installation_id so chapter-diff route can re-auth
+                    "installation_id": context.get("installation_id"),
                 }
             )
             await ReviewEventRepo.create(
@@ -610,7 +718,7 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
             await sse_manager.publish_review_completed(
                 review_id,
                 findings_count=len(all_findings),
-                duration_seconds=result.duration_seconds
+                duration_seconds=total_duration
             )
 
         # 7. Persist review to history (project memory)
@@ -651,4 +759,17 @@ async def _run_review_async(context: dict[str, Any]) -> dict:
                 await sse_manager.publish_review_failed(review_id, str(e))
         return {"success": False, "error": str(e)}
     finally:
+        if 'mcp_manager' in locals() and mcp_manager:
+            try:
+                mcp_manager.shutdown()
+                logger.info("Shutdown active MCP server connections.")
+            except Exception as shutdown_err:
+                logger.warning(f"Error shutting down MCP manager: {shutdown_err}")
         release_review_lock(int(mr_iid))
+        
+        # Cleanly dispose the database engine before event loop closes
+        from models.database import _get_engine
+        try:
+            await _get_engine().dispose()
+        except Exception:
+            pass

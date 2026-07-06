@@ -75,10 +75,12 @@ async def _set_rag_status(repo_id: int, status: str) -> None:
 )
 def update_repo_rag_index(self, repo_id: int) -> dict[str, Any]:
     """Celery task that fetches a repository, clones it, and builds a persistent RAG index."""
-    # Reset SQLAlchemy engine for asyncio run context
+    # Reset SQLAlchemy engine for asyncio run context in this thread
     from models import database as _db
-    _db._engine = None
-    _db._session_factory = None
+    if hasattr(_db._thread_local, "engine"):
+        _db._thread_local.engine = None
+    if hasattr(_db._thread_local, "session_factory"):
+        _db._thread_local.session_factory = None
 
     return asyncio.run(_update_repo_rag_index_async(repo_id))
 
@@ -134,3 +136,9 @@ async def _update_repo_rag_index_async(repo_id: int) -> dict[str, Any]:
         logger.error(f"Failed to build RAG index for repo_id={repo_id}: {e}")
         await _set_rag_status(repo_id, "failed")
         return {"success": False, "error": str(e)}
+    finally:
+        from models.database import _get_engine
+        try:
+            await _get_engine().dispose()
+        except Exception:
+            pass

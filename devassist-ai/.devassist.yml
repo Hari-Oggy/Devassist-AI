@@ -8,14 +8,15 @@ review:
     - "frontend/.next/"
     - "frontend/node_modules/"
     - ".venv/"
+    - ".git/"
   focus_areas:
     - security
     - architecture
     - maintainability
   language_hints:
-    - python
+    - go
     - typescript
-    - javascript
+    - python
   max_findings_per_file: 30
   skip_draft_prs: false
 

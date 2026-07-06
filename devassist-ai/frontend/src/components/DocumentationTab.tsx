@@ -44,21 +44,21 @@ export function DocumentationTab({
       setLoading(false);
       return;
     }
-    // Simulate fetching documentation from backend. 
-    // In reality, you'd fetch from `/api/v3/reviews/${reviewId}/documentation`
-    // For now, we mock it to demonstrate the UI.
-    setTimeout(() => {
-      setDocs([
-        {
-          file: "src/api/auth.py",
-          updated_code: `def login(user_id: int):\n    """Authenticates the user by ID and returns a session token."""\n    pass`,
-          markdown: `# auth.py\n\nHandles user authentication.\n\n## login(user_id)\nAuthenticates the user.`,
-          changes_made: 1,
-          items_documented: ["login"],
-        },
-      ]);
-      setLoading(false);
-    }, 1000);
+    
+    fetch(`/api/v3/reviews/${reviewId}/documentation`)
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setDocs(data);
+        } else {
+          setDocs([]);
+        }
+      })
+      .catch(err => {
+        console.error("Failed to fetch documentation:", err);
+        setError(true);
+      })
+      .finally(() => setLoading(false));
   }, [reviewId, isCompleted]);
 
   if (!isCompleted) return null;

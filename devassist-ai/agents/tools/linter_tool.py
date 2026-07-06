@@ -144,6 +144,114 @@ def checkstyle_analysis(file_path: str) -> str:
         return f"Error running Java linter: {str(e)}"
 
 
+def go_lint_analysis(file_path: str) -> str:
+    """Runs Go static analysis using golangci-lint or go vet."""
+    if not os.path.exists(file_path):
+        return f"Error: File {file_path} does not exist."
+    if not file_path.endswith('.go'):
+        return f"Error: File {file_path} is not a Go file."
+
+    # Try golangci-lint first
+    try:
+        result = subprocess.run(
+            ["golangci-lint", "run", "--out-format=json", file_path],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.stdout.strip():
+            issues = json.loads(result.stdout)
+            formatted = [f"GOLANGCI-LINT RESULTS for {os.path.basename(file_path)}:\n"]
+            for issue in issues.get("Issues", [])[:20]:
+                line = issue.get("Pos", {}).get("Line", "?")
+                msg = issue.get("Text", "")
+                linter = issue.get("FromLinter", "unknown")
+                formatted.append(f"Line {line} [{linter}]: {msg}")
+            if len(formatted) > 1:
+                return "\n".join(formatted)
+    except FileNotFoundError:
+        pass # fallback to go vet
+    except Exception:
+        pass
+
+    # Fallback to go vet
+    try:
+        result = subprocess.run(
+            ["go", "vet", file_path],
+            capture_output=True, text=True, timeout=30
+        )
+        output = (result.stdout + result.stderr).strip()
+        if not output:
+            return "No issues found."
+        formatted = [f"GO VET RESULTS for {os.path.basename(file_path)}:\n"]
+        formatted.extend(output.splitlines()[:20])
+        return "\n".join(formatted)
+    except FileNotFoundError:
+        return "Go toolchain not available (go vet not found)."
+    except subprocess.TimeoutExpired:
+        return "Error: Go analysis timed out."
+    except Exception as e:
+        return f"Error running go vet: {str(e)}"
+
+def rust_lint_analysis(file_path: str) -> str:
+    """Runs Rust static analysis using cargo clippy."""
+    if not os.path.exists(file_path):
+        return f"Error: File {file_path} does not exist."
+    
+    file_dir = os.path.dirname(file_path)
+    try:
+        # Run clippy in the file's directory
+        result = subprocess.run(
+            ["cargo", "clippy", "--message-format=short", "--quiet"],
+            cwd=file_dir, capture_output=True, text=True, timeout=60
+        )
+        output = (result.stdout + result.stderr).strip()
+        if not output:
+            return "No issues found."
+            
+        # Filter for the specific file
+        file_basename = os.path.basename(file_path)
+        lines = [l for l in output.splitlines() if file_basename in l and ("error:" in l or "warning:" in l)]
+        if not lines:
+            return "No issues found."
+            
+        formatted = [f"CARGO CLIPPY RESULTS for {file_basename}:\n"]
+        formatted.extend(lines[:20])
+        return "\n".join(formatted)
+    except FileNotFoundError:
+        return "Rust toolchain (cargo clippy) not available."
+    except subprocess.TimeoutExpired:
+        return "Error: Rust analysis timed out."
+    except Exception as e:
+        return f"Error running Rust linter: {str(e)}"
+
+def cpp_lint_analysis(file_path: str) -> str:
+    """Runs C/C++ static analysis using cppcheck."""
+    if not os.path.exists(file_path):
+        return f"Error: File {file_path} does not exist."
+        
+    try:
+        result = subprocess.run(
+            ["cppcheck", "--enable=all", "--inconclusive", "--template=gcc", file_path],
+            capture_output=True, text=True, timeout=30
+        )
+        # cppcheck outputs to stderr
+        output = result.stderr.strip()
+        if not output:
+            return "No issues found."
+            
+        lines = [l for l in output.splitlines() if "information:" not in l.lower()]
+        if not lines:
+            return "No issues found."
+            
+        formatted = [f"CPPCHECK RESULTS for {os.path.basename(file_path)}:\n"]
+        formatted.extend(lines[:20])
+        return "\n".join(formatted)
+    except FileNotFoundError:
+        return "cppcheck not available."
+    except subprocess.TimeoutExpired:
+        return "Error: cppcheck analysis timed out."
+    except Exception as e:
+        return f"Error running cppcheck: {str(e)}"
+
 # ─── Extension → Linter Mapping ──────────────────────────────────────────────
 
 LINTER_MAP = {
@@ -153,6 +261,14 @@ LINTER_MAP = {
     ".jsx": eslint_analysis,
     ".tsx": eslint_analysis,
     ".java": checkstyle_analysis,
+    ".go": go_lint_analysis,
+    ".rs": rust_lint_analysis,
+    ".c": cpp_lint_analysis,
+    ".cpp": cpp_lint_analysis,
+    ".h": cpp_lint_analysis,
+    ".hpp": cpp_lint_analysis,
+    ".cc": cpp_lint_analysis,
+    ".cxx": cpp_lint_analysis,
 }
 
 
@@ -174,5 +290,5 @@ def run_linter(filename: str) -> str:
     return ""
 
 
-LINTER_TOOLS = [pylint_analysis, eslint_analysis, checkstyle_analysis]
+LINTER_TOOLS = [pylint_analysis, eslint_analysis, checkstyle_analysis, go_lint_analysis, rust_lint_analysis, cpp_lint_analysis]
 

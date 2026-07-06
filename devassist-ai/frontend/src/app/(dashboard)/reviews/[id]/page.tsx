@@ -25,6 +25,9 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
+import { ProloguePanel } from "@/components/prologue/ProloguePanel";
+import { PierreDiffViewer } from "@/components/diff/PierreDiffViewer";
+import { BookOpen, Layers } from "lucide-react";
 
 // ── Shared UI primitives ────────────────────────────────────────────────
 
@@ -76,7 +79,7 @@ function StatusBadge({ status }: { status: string }) {
 
 // ── Tabs ────────────────────────────────────────────────────────────────
 
-type Tab = "findings" | "impact" | "documentation";
+type Tab = "prologue" | "chapters" | "findings" | "impact" | "documentation";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -312,7 +315,8 @@ export default function ReviewDetailPage() {
   const [review, setReview] = useState<Review | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<Tab>("findings");
+  const [activeTab, setActiveTab] = useState<Tab>("prologue");
+  const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
 
   const fetchFindings = () => {
     fetch(`/api/v3/reviews/${reviewId}/findings`)
@@ -510,6 +514,8 @@ export default function ReviewDetailPage() {
             <div className="flex gap-1 border-b border-white/[0.06]">
               {(
                 [
+                  { id: "prologue", label: "Prologue", icon: <BookOpen className="h-4 w-4" /> },
+                  { id: "chapters", label: "Chapters", icon: <Layers className="h-4 w-4" /> },
                   { id: "findings", label: `Findings (${findings.length})`, icon: <ShieldAlert className="h-4 w-4" /> },
                   { id: "impact", label: "Impact Analysis", icon: <Network className="h-4 w-4" /> },
                   { id: "documentation", label: "Documentation", icon: <FileCode2 className="h-4 w-4" /> },
@@ -532,6 +538,18 @@ export default function ReviewDetailPage() {
             </div>
 
             {/* Tab content */}
+            {activeTab === "prologue" && (
+              <ProloguePanel reviewId={reviewId} />
+            )}
+
+            {activeTab === "chapters" && (
+              <PierreDiffViewer 
+                reviewId={reviewId} 
+                chapterId={selectedChapterId} 
+                onSelectChapter={setSelectedChapterId} 
+              />
+            )}
+
             {activeTab === "findings" && (
               <div className="space-y-5">
                 {findings.length === 0 ? (

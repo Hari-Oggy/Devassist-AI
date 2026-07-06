@@ -65,7 +65,10 @@ export function ReviewProgress({ reviewId, initialStatus, onComplete }: ReviewPr
     };
 
     eventSource.onerror = () => {
-      console.error("SSE connection error");
+      // Quietly handle connection drops (e.g. when backend restarts)
+      if (eventSource.readyState === EventSource.CLOSED) {
+        console.debug("SSE connection closed by server.");
+      }
     };
 
     return () => eventSource.close();

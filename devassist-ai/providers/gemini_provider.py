@@ -20,7 +20,7 @@ class GeminiProvider(BaseProvider):
         settings = get_settings()
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
-    def generate(self, request: LLMRequest) -> LLMResponse:
+    def generate(self, request: LLMRequest, **kwargs) -> LLMResponse:
         settings = get_settings()
         model_name = request.metadata.get("model") or settings.LLM_MODEL
         temperature = request.temperature if request.temperature is not None else settings.LLM_TEMPERATURE

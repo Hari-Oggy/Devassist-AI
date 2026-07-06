@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = Field(default="http://localhost:3000", description="Comma-separated allowed CORS origins")
     API_KEY: str = Field(default="", description="API key to protect FastAPI endpoints (leave empty to disable)")
 
+    # --- Phase 5: Local CLI Review ---
+    LOCAL_REVIEW_ENABLED: bool = Field(default=False, description="Enable local review via CLI without GitHub PR")
+    LOCAL_REVIEW_TOKEN: str = Field(default="", description="Secret token required for the CLI to post to local-review endpoint")
+
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

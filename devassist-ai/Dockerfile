@@ -37,6 +37,9 @@ RUN apt-get update && apt-get install -y \
     git \
     nodejs \
     npm \
+    cppcheck \
+    golang \
+    cargo \
     && npm install -g eslint \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -51,6 +54,9 @@ COPY pyproject.toml uv.lock ./
 
 # Install dependencies
 RUN uv sync --frozen --no-dev
+
+# Install python linters globally
+RUN uv pip install --system pylint
 
 # Copy source
 COPY . .

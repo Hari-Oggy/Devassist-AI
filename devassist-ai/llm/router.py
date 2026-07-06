@@ -104,7 +104,7 @@ class LLMRouter:
             return True  # Local LLMs don't need an API key
         return False
 
-    def generate(self, request: LLMRequest) -> LLMResponse:
+    def generate(self, request: LLMRequest, tool_executor=None) -> LLMResponse:
         """
         Main entry point. Routes the request through:
         cache check → model selection → provider call → fallback → metrics.
@@ -147,7 +147,7 @@ class LLMRouter:
             # Inject the selected model into metadata for the provider
             request.metadata["model"] = model_name
 
-            response = self._call_with_retries(provider, request, request_id)
+            response = self._call_with_retries(provider, request, request_id, tool_executor=tool_executor)
 
             if response.success:
                 response.fallback_used = fallback_used
@@ -210,13 +210,26 @@ class LLMRouter:
 
         return chain
 
-    def _call_with_retries(self, provider: BaseProvider, request: LLMRequest, request_id: str) -> LLMResponse:
+    def _call_with_retries(self, provider: BaseProvider, request: LLMRequest, request_id: str, tool_executor=None) -> LLMResponse:
         """Call the provider with exponential backoff retries."""
         max_retries = self.settings.LLM_MAX_RETRIES
         for attempt in range(max_retries):
-            response = provider.generate(request)
+            import inspect
+            sig = inspect.signature(provider.generate)
+            if "tool_executor" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                response = provider.generate(request, tool_executor=tool_executor)
+            else:
+                response = provider.generate(request)
             if response.success:
                 return response
+
+            # Do not retry fatal client errors (auth, bad request, insufficient funds)
+            if response.error and any(code in response.error for code in ["400", "401", "403", "credit balance is too low"]):
+                logger.warning(
+                    f"Fatal client error encountered: {response.error}. Skipping retries.",
+                    extra={"request_id": request_id, "model": request.metadata.get("model")}
+                )
+                break
 
             if attempt < max_retries - 1:
                 wait = 2 ** attempt  # 1s, 2s, 4s

@@ -92,6 +92,9 @@ class EventType(str, enum.Enum):
     FINDING_ADDED = "finding_added"
     COMMENT_POSTED = "comment_posted"
     WEBHOOK_RECEIVED = "webhook_received"
+    PROLOGUE_GENERATED = "prologue_generated"
+    CHAPTER_STARTED = "chapter_started"
+    CHAPTER_COMPLETED = "chapter_completed"
 
 
 def _utcnow() -> datetime:
@@ -255,6 +258,7 @@ class Review(Base):
     commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     raw_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     pipeline_meta: Mapped[dict | None] = mapped_column(CompatibleJSON, nullable=True)
+    prologue_json: Mapped[dict | None] = mapped_column(CompatibleJSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
@@ -306,6 +310,9 @@ class Finding(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     review_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("reviews.id", ondelete="CASCADE"), nullable=False
+    )
+    chapter_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("chapters.id", ondelete="SET NULL"), nullable=True
     )
     file_path: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
     line_start: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -382,3 +389,30 @@ class ReviewEvent(Base):
 
     def __repr__(self) -> str:
         return f"<ReviewEvent {self.event_type} review_id={self.review_id}>"
+
+
+# ── MCPServer ─────────────────────────────────────────────────────────
+
+class MCPServer(Base):
+    """Configuration for an Anthropic Model Context Protocol (MCP) server.
+
+    Allows DevAssist to connect to third-party tools (like Notion, Linear)
+    by standardizing communication over JSON-RPC.
+    """
+
+    __tablename__ = "mcp_servers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    transport_type: Mapped[str] = mapped_column(String(50), default="stdio", nullable=False)
+    command: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    args: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of arguments
+    url: Mapped[str | None] = mapped_column(String(1000), nullable=True)  # For SSE transport
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<MCPServer {self.name} active={self.is_active}>"
+

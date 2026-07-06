@@ -122,7 +122,15 @@ def _load_huggingface_embeddings(model_name: str) -> Any:
     try:
         from langchain_community.embeddings import HuggingFaceEmbeddings
         logger.info("Loading HuggingFace embeddings: %s", model_name)
-        return HuggingFaceEmbeddings(model_name=model_name)
+        # Use cached model — suppress the 8 HuggingFace HTTP HEAD/GET calls on every startup
+        import os as _os
+        _os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+        _os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+        return HuggingFaceEmbeddings(
+            model_name=model_name,
+            model_kwargs={"device": "cpu"},  # explicit; avoids CUDA probe on CPU-only machines
+            encode_kwargs={"normalize_embeddings": True},
+        )
     except ImportError:
         # Try direct sentence-transformers as fallback
         from sentence_transformers import SentenceTransformer
