@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/f3f96ea7-605b-4620-a3d7-62af2fe8464a
+
 <div align="center">
 
 # 🤖 DevAssist AI v2.0
@@ -392,7 +396,7 @@ devassist-ai/
 
 ## 📸 Screenshots
 
-<img width="1024" height="559" alt="DevAssist AI Dashboard" src="https://github.com/user-attachments/assets/42361dd9-333a-4164-9878-27da05599428" />
+<img width="1024" height="559" alt="DevAssist AI Dashboard" src="https://github.com/user-attachments/assets/662eb92e-4f4b-46a0-9f62-921fc1873c88" />
 
 ### Review Result
 
@@ -400,7 +404,7 @@ devassist-ai/
 
 ### Demo Video
 
-https://github.com/user-attachments/assets/662eb92e-4f4b-46a0-9f62-921fc1873c88
+
 
 ---
 
