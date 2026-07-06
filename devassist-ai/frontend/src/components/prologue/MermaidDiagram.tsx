@@ -38,6 +38,12 @@ export function MermaidDiagram({ source }: { source: string }) {
     }
     cleanSource = cleanSource.trim();
 
+    // Sanitize node labels: if an LLM generated square bracket labels without quotes, quote them!
+    // E.g., B[API Handler (audit/api.go)] -> B["API Handler (audit/api.go)"]
+    cleanSource = cleanSource.replace(/([a-zA-Z0-9_-]+)\[([^"\[\({\]][^\]]*?)\]/g, '$1["$2"]');
+    // Sanitize round bracket labels too: e.g., A(some / test) -> A("some / test")
+    cleanSource = cleanSource.replace(/([a-zA-Z0-9_-]+)\(([^"\[\({\)][^)]*?)\)/g, '$1("$2")');
+
     if (!cleanSource) {
       setRendering(false);
       return;

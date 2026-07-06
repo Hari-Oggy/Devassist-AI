@@ -20,7 +20,7 @@ class PrologueSynthesizer:
             "1. Return ONLY a single valid JSON object. No markdown, no code fences, no commentary.\n"
             "2. Every string value must be properly JSON-escaped (use \\n for newlines, \\\\ for backslashes).\n"
             "3. The 'diagram' field must contain RAW Mermaid syntax ONLY — do NOT wrap it in ```mermaid``` code fences.\n"
-            "   Example diagram value: \"graph LR\\n  A[Client] --> B[Server]\\n  B --> C[Database]\"\n\n"
+            "   Example diagram value: \"graph LR\\n  A[\\\"Client\\\"] --> B[\\\"API Server (api.go)\\\"]\\n  B --> C[\\\"Database\\\"]\"\n\n"
             "JSON SCHEMA (follow exactly):\n"
             "{\n"
             '  "motivation": "A short paragraph explaining WHY this PR was created.",\n'
@@ -43,6 +43,7 @@ class PrologueSynthesizer:
             "- focus_areas MUST be an array of objects with type, severity, title, description fields.\n"
             "- diagram MUST be a plain string of Mermaid syntax (e.g. graph LR\\n  A --> B) or null.\n"
             "  NEVER use triple backticks or ```mermaid``` fences inside the diagram value.\n"
+            "- In Mermaid diagrams, NEVER put special characters like (), /, ., -, or spaces inside unquoted brackets. ALWAYS wrap node labels in double quotes: e.g. A[\"Client (Web)\"] --> B[\"API Handler (api.go)\"].\n"
             "- Return ONLY the JSON object, nothing else."
         )
 
@@ -210,6 +211,10 @@ class PrologueSynthesizer:
         if not any(diagram.startswith(kw) or diagram.startswith(kw.upper()) for kw in mermaid_keywords):
             logger.warning("Diagram does not look like valid Mermaid syntax: %s...", diagram[:80])
             return ""
+        
+        # Sanitize node labels: if an LLM generated square/round bracket labels without quotes, quote them!
+        diagram = re.sub(r'([a-zA-Z0-9_-]+)\[([^"\[\({\]][^\]]*?)\]', r'\1["\2"]', diagram)
+        diagram = re.sub(r'([a-zA-Z0-9_-]+)\(([^"\[\({\)][^)]*?)\)', r'\1("\2")', diagram)
         
         return diagram
 
